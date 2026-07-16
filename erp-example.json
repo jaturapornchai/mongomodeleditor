@@ -1,0 +1,1309 @@
+{
+  "app": "mongomodel",
+  "version": 2,
+  "diagrams": [
+    {
+      "name": "1) ขาย & CRM",
+      "nodes": [
+        {
+          "id": "customers",
+          "type": "collection",
+          "position": {
+            "x": 60,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "customers",
+            "description": "ลูกค้า",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "customers___id"
+              },
+              {
+                "name": "code",
+                "type": "String",
+                "required": true,
+                "description": "รหัสลูกค้า",
+                "unique": true,
+                "id": "customers__code"
+              },
+              {
+                "name": "name",
+                "type": "String",
+                "required": true,
+                "description": "ชื่อลูกค้า",
+                "id": "customers__name"
+              },
+              {
+                "name": "tax_id",
+                "type": "String",
+                "required": false,
+                "description": "เลขผู้เสียภาษี 13 หลัก",
+                "id": "customers__tax_id"
+              },
+              {
+                "name": "type",
+                "type": "String",
+                "required": false,
+                "description": "ประเภทลูกค้า",
+                "enum": [
+                  "individual",
+                  "company"
+                ],
+                "default": "company",
+                "id": "customers__type"
+              },
+              {
+                "name": "addresses",
+                "type": "Array",
+                "required": false,
+                "description": "ที่อยู่ (ฝังหลายชุด)",
+                "of": "Object",
+                "id": "customers__addresses"
+              },
+              {
+                "name": "credit_limit",
+                "type": "Decimal128",
+                "required": false,
+                "description": "วงเงินเครดิต",
+                "id": "customers__credit_limit"
+              },
+              {
+                "name": "is_active",
+                "type": "Boolean",
+                "required": false,
+                "default": "true",
+                "id": "customers__is_active"
+              },
+              {
+                "name": "created_at",
+                "type": "Date",
+                "required": false,
+                "description": "วันที่สร้าง",
+                "id": "customers__created_at"
+              }
+            ]
+          }
+        },
+        {
+          "id": "sales_orders",
+          "type": "collection",
+          "position": {
+            "x": 440,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "sales_orders",
+            "description": "ใบสั่งขาย",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "sales_orders___id"
+              },
+              {
+                "name": "order_no",
+                "type": "String",
+                "required": true,
+                "description": "เลขที่เอกสาร",
+                "unique": true,
+                "id": "sales_orders__order_no"
+              },
+              {
+                "name": "customer_id",
+                "type": "ObjectId",
+                "required": true,
+                "description": "อ้างอิงลูกค้า",
+                "id": "sales_orders__customer_id"
+              },
+              {
+                "name": "order_date",
+                "type": "Date",
+                "required": true,
+                "id": "sales_orders__order_date"
+              },
+              {
+                "name": "status",
+                "type": "String",
+                "required": false,
+                "description": "สถานะเอกสาร",
+                "enum": [
+                  "draft",
+                  "confirmed",
+                  "shipped",
+                  "invoiced",
+                  "cancelled"
+                ],
+                "default": "draft",
+                "id": "sales_orders__status"
+              },
+              {
+                "name": "items",
+                "type": "Array",
+                "required": false,
+                "description": "รายการสินค้า (ฝัง)",
+                "of": "Object",
+                "id": "sales_orders__items"
+              },
+              {
+                "name": "subtotal",
+                "type": "Decimal128",
+                "required": false,
+                "id": "sales_orders__subtotal"
+              },
+              {
+                "name": "vat",
+                "type": "Decimal128",
+                "required": false,
+                "description": "ภาษีมูลค่าเพิ่ม 7%",
+                "id": "sales_orders__vat"
+              },
+              {
+                "name": "total",
+                "type": "Decimal128",
+                "required": true,
+                "description": "ยอดรวมสุทธิ",
+                "id": "sales_orders__total"
+              },
+              {
+                "name": "note",
+                "type": "String",
+                "required": false,
+                "description": "หมายเหตุ",
+                "id": "sales_orders__note"
+              }
+            ]
+          }
+        },
+        {
+          "id": "invoices",
+          "type": "collection",
+          "position": {
+            "x": 820,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "invoices",
+            "description": "ใบแจ้งหนี้",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "invoices___id"
+              },
+              {
+                "name": "invoice_no",
+                "type": "String",
+                "required": true,
+                "unique": true,
+                "id": "invoices__invoice_no"
+              },
+              {
+                "name": "sales_order_id",
+                "type": "ObjectId",
+                "required": false,
+                "description": "อ้างอิงใบสั่งขาย",
+                "id": "invoices__sales_order_id"
+              },
+              {
+                "name": "customer_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "invoices__customer_id"
+              },
+              {
+                "name": "issue_date",
+                "type": "Date",
+                "required": true,
+                "description": "วันที่ออก",
+                "id": "invoices__issue_date"
+              },
+              {
+                "name": "due_date",
+                "type": "Date",
+                "required": false,
+                "description": "วันครบกำหนด",
+                "id": "invoices__due_date"
+              },
+              {
+                "name": "amount",
+                "type": "Decimal128",
+                "required": true,
+                "id": "invoices__amount"
+              },
+              {
+                "name": "vat",
+                "type": "Decimal128",
+                "required": false,
+                "id": "invoices__vat"
+              },
+              {
+                "name": "status",
+                "type": "String",
+                "required": false,
+                "description": "สถานะชำระ",
+                "enum": [
+                  "unpaid",
+                  "partial",
+                  "paid",
+                  "overdue"
+                ],
+                "default": "unpaid",
+                "id": "invoices__status"
+              }
+            ]
+          }
+        },
+        {
+          "id": "payments",
+          "type": "collection",
+          "position": {
+            "x": 60,
+            "y": 520
+          },
+          "width": 300,
+          "data": {
+            "label": "payments",
+            "description": "การรับชำระ",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "payments___id"
+              },
+              {
+                "name": "payment_no",
+                "type": "String",
+                "required": true,
+                "unique": true,
+                "id": "payments__payment_no"
+              },
+              {
+                "name": "invoice_id",
+                "type": "ObjectId",
+                "required": true,
+                "description": "อ้างอิงใบแจ้งหนี้",
+                "id": "payments__invoice_id"
+              },
+              {
+                "name": "paid_date",
+                "type": "Date",
+                "required": true,
+                "id": "payments__paid_date"
+              },
+              {
+                "name": "amount",
+                "type": "Decimal128",
+                "required": true,
+                "description": "จำนวนเงิน",
+                "id": "payments__amount"
+              },
+              {
+                "name": "method",
+                "type": "String",
+                "required": false,
+                "description": "ช่องทางชำระ",
+                "enum": [
+                  "cash",
+                  "transfer",
+                  "credit_card",
+                  "cheque"
+                ],
+                "default": "transfer",
+                "id": "payments__method"
+              },
+              {
+                "name": "ref_no",
+                "type": "String",
+                "required": false,
+                "description": "เลขอ้างอิงธุรกรรม",
+                "id": "payments__ref_no"
+              }
+            ]
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_sales_orders_customer_id_customers",
+          "source": "sales_orders",
+          "sourceHandle": "sales_orders__customer_id-s",
+          "target": "customers",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        },
+        {
+          "id": "e_invoices_sales_order_id_sales_orders",
+          "source": "invoices",
+          "sourceHandle": "invoices__sales_order_id-s",
+          "target": "sales_orders",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-1"
+          }
+        },
+        {
+          "id": "e_invoices_customer_id_customers",
+          "source": "invoices",
+          "sourceHandle": "invoices__customer_id-s",
+          "target": "customers",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        },
+        {
+          "id": "e_payments_invoice_id_invoices",
+          "source": "payments",
+          "sourceHandle": "payments__invoice_id-s",
+          "target": "invoices",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2) จัดซื้อ",
+      "nodes": [
+        {
+          "id": "suppliers",
+          "type": "collection",
+          "position": {
+            "x": 60,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "suppliers",
+            "description": "ผู้ขาย / ซัพพลายเออร์",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "suppliers___id"
+              },
+              {
+                "name": "code",
+                "type": "String",
+                "required": true,
+                "description": "รหัสผู้ขาย",
+                "unique": true,
+                "id": "suppliers__code"
+              },
+              {
+                "name": "name",
+                "type": "String",
+                "required": true,
+                "description": "ชื่อผู้ขาย",
+                "id": "suppliers__name"
+              },
+              {
+                "name": "tax_id",
+                "type": "String",
+                "required": false,
+                "description": "เลขผู้เสียภาษี",
+                "id": "suppliers__tax_id"
+              },
+              {
+                "name": "contact",
+                "type": "Object",
+                "required": false,
+                "description": "ข้อมูลติดต่อ (ฝัง)",
+                "id": "suppliers__contact"
+              },
+              {
+                "name": "payment_terms",
+                "type": "Number",
+                "required": false,
+                "description": "เครดิตเทอม (วัน)",
+                "default": "30",
+                "id": "suppliers__payment_terms"
+              },
+              {
+                "name": "is_active",
+                "type": "Boolean",
+                "required": false,
+                "default": "true",
+                "id": "suppliers__is_active"
+              }
+            ]
+          }
+        },
+        {
+          "id": "purchase_orders",
+          "type": "collection",
+          "position": {
+            "x": 440,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "purchase_orders",
+            "description": "ใบสั่งซื้อ",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "purchase_orders___id"
+              },
+              {
+                "name": "po_no",
+                "type": "String",
+                "required": true,
+                "description": "เลขที่ใบสั่งซื้อ",
+                "unique": true,
+                "id": "purchase_orders__po_no"
+              },
+              {
+                "name": "supplier_id",
+                "type": "ObjectId",
+                "required": true,
+                "description": "อ้างอิงผู้ขาย",
+                "id": "purchase_orders__supplier_id"
+              },
+              {
+                "name": "order_date",
+                "type": "Date",
+                "required": true,
+                "id": "purchase_orders__order_date"
+              },
+              {
+                "name": "status",
+                "type": "String",
+                "required": false,
+                "enum": [
+                  "draft",
+                  "sent",
+                  "received",
+                  "closed"
+                ],
+                "default": "draft",
+                "id": "purchase_orders__status"
+              },
+              {
+                "name": "items",
+                "type": "Array",
+                "required": false,
+                "description": "รายการสั่งซื้อ (ฝัง)",
+                "of": "Object",
+                "id": "purchase_orders__items"
+              },
+              {
+                "name": "total",
+                "type": "Decimal128",
+                "required": true,
+                "id": "purchase_orders__total"
+              }
+            ]
+          }
+        },
+        {
+          "id": "goods_receipts",
+          "type": "collection",
+          "position": {
+            "x": 820,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "goods_receipts",
+            "description": "ใบรับสินค้า",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "goods_receipts___id"
+              },
+              {
+                "name": "gr_no",
+                "type": "String",
+                "required": true,
+                "unique": true,
+                "id": "goods_receipts__gr_no"
+              },
+              {
+                "name": "purchase_order_id",
+                "type": "ObjectId",
+                "required": true,
+                "description": "อ้างอิงใบสั่งซื้อ",
+                "id": "goods_receipts__purchase_order_id"
+              },
+              {
+                "name": "received_date",
+                "type": "Date",
+                "required": true,
+                "id": "goods_receipts__received_date"
+              },
+              {
+                "name": "warehouse_id",
+                "type": "ObjectId",
+                "required": false,
+                "description": "คลังที่รับเข้า (ข้ามโมดูล)",
+                "id": "goods_receipts__warehouse_id"
+              },
+              {
+                "name": "items",
+                "type": "Array",
+                "required": false,
+                "of": "Object",
+                "id": "goods_receipts__items"
+              }
+            ]
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_purchase_orders_supplier_id_suppliers",
+          "source": "purchase_orders",
+          "sourceHandle": "purchase_orders__supplier_id-s",
+          "target": "suppliers",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        },
+        {
+          "id": "e_goods_receipts_purchase_order_id_purchase_orders",
+          "source": "goods_receipts",
+          "sourceHandle": "goods_receipts__purchase_order_id-s",
+          "target": "purchase_orders",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3) สินค้าคงคลัง",
+      "nodes": [
+        {
+          "id": "categories",
+          "type": "collection",
+          "position": {
+            "x": 60,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "categories",
+            "description": "หมวดหมู่สินค้า",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "categories___id"
+              },
+              {
+                "name": "name",
+                "type": "String",
+                "required": true,
+                "description": "ชื่อหมวด",
+                "unique": true,
+                "id": "categories__name"
+              },
+              {
+                "name": "parent_id",
+                "type": "ObjectId",
+                "required": false,
+                "description": "หมวดแม่ (อ้างอิงตัวเอง)",
+                "id": "categories__parent_id"
+              },
+              {
+                "name": "path",
+                "type": "String",
+                "required": false,
+                "description": "เส้นทางลำดับชั้น",
+                "id": "categories__path"
+              }
+            ]
+          }
+        },
+        {
+          "id": "products",
+          "type": "collection",
+          "position": {
+            "x": 440,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "products",
+            "description": "สินค้า",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "products___id"
+              },
+              {
+                "name": "sku",
+                "type": "String",
+                "required": true,
+                "description": "รหัสสินค้า",
+                "unique": true,
+                "id": "products__sku"
+              },
+              {
+                "name": "name",
+                "type": "String",
+                "required": true,
+                "description": "ชื่อสินค้า",
+                "id": "products__name"
+              },
+              {
+                "name": "category_id",
+                "type": "ObjectId",
+                "required": false,
+                "description": "อ้างอิงหมวดหมู่",
+                "id": "products__category_id"
+              },
+              {
+                "name": "unit",
+                "type": "String",
+                "required": false,
+                "description": "หน่วยนับ",
+                "enum": [
+                  "pcs",
+                  "box",
+                  "kg",
+                  "liter"
+                ],
+                "default": "pcs",
+                "id": "products__unit"
+              },
+              {
+                "name": "cost",
+                "type": "Decimal128",
+                "required": false,
+                "description": "ต้นทุน",
+                "id": "products__cost"
+              },
+              {
+                "name": "price",
+                "type": "Decimal128",
+                "required": true,
+                "description": "ราคาขาย",
+                "id": "products__price"
+              },
+              {
+                "name": "barcode",
+                "type": "String",
+                "required": false,
+                "id": "products__barcode"
+              },
+              {
+                "name": "attributes",
+                "type": "Object",
+                "required": false,
+                "description": "คุณสมบัติเพิ่มเติม (ฝัง)",
+                "id": "products__attributes"
+              },
+              {
+                "name": "tags",
+                "type": "Array",
+                "required": false,
+                "description": "ป้ายกำกับ",
+                "of": "String",
+                "id": "products__tags"
+              },
+              {
+                "name": "is_active",
+                "type": "Boolean",
+                "required": false,
+                "default": "true",
+                "id": "products__is_active"
+              }
+            ]
+          }
+        },
+        {
+          "id": "warehouses",
+          "type": "collection",
+          "position": {
+            "x": 820,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "warehouses",
+            "description": "คลังสินค้า",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "warehouses___id"
+              },
+              {
+                "name": "code",
+                "type": "String",
+                "required": true,
+                "description": "รหัสคลัง",
+                "unique": true,
+                "id": "warehouses__code"
+              },
+              {
+                "name": "name",
+                "type": "String",
+                "required": true,
+                "id": "warehouses__name"
+              },
+              {
+                "name": "location",
+                "type": "Object",
+                "required": false,
+                "description": "พิกัด / ที่อยู่คลัง (ฝัง)",
+                "id": "warehouses__location"
+              }
+            ]
+          }
+        },
+        {
+          "id": "stock_movements",
+          "type": "collection",
+          "position": {
+            "x": 60,
+            "y": 520
+          },
+          "width": 300,
+          "data": {
+            "label": "stock_movements",
+            "description": "การเคลื่อนไหวสต๊อก",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "stock_movements___id"
+              },
+              {
+                "name": "product_id",
+                "type": "ObjectId",
+                "required": true,
+                "description": "อ้างอิงสินค้า",
+                "id": "stock_movements__product_id"
+              },
+              {
+                "name": "warehouse_id",
+                "type": "ObjectId",
+                "required": true,
+                "description": "อ้างอิงคลัง",
+                "id": "stock_movements__warehouse_id"
+              },
+              {
+                "name": "type",
+                "type": "String",
+                "required": false,
+                "description": "ประเภทเคลื่อนไหว",
+                "enum": [
+                  "in",
+                  "out",
+                  "adjust",
+                  "transfer"
+                ],
+                "default": "in",
+                "id": "stock_movements__type"
+              },
+              {
+                "name": "qty",
+                "type": "Number",
+                "required": true,
+                "description": "จำนวน (+/-)",
+                "id": "stock_movements__qty"
+              },
+              {
+                "name": "moved_at",
+                "type": "Date",
+                "required": true,
+                "id": "stock_movements__moved_at"
+              },
+              {
+                "name": "ref_doc",
+                "type": "String",
+                "required": false,
+                "description": "เอกสารอ้างอิง",
+                "id": "stock_movements__ref_doc"
+              }
+            ]
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_categories_parent_id_categories",
+          "source": "categories",
+          "sourceHandle": "categories__parent_id-s",
+          "target": "categories",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        },
+        {
+          "id": "e_products_category_id_categories",
+          "source": "products",
+          "sourceHandle": "products__category_id-s",
+          "target": "categories",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        },
+        {
+          "id": "e_stock_movements_product_id_products",
+          "source": "stock_movements",
+          "sourceHandle": "stock_movements__product_id-s",
+          "target": "products",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        },
+        {
+          "id": "e_stock_movements_warehouse_id_warehouses",
+          "source": "stock_movements",
+          "sourceHandle": "stock_movements__warehouse_id-s",
+          "target": "warehouses",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4) บัญชี",
+      "nodes": [
+        {
+          "id": "chart_of_accounts",
+          "type": "collection",
+          "position": {
+            "x": 60,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "chart_of_accounts",
+            "description": "ผังบัญชี",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "chart_of_accounts___id"
+              },
+              {
+                "name": "code",
+                "type": "String",
+                "required": true,
+                "description": "เลขที่บัญชี",
+                "unique": true,
+                "id": "chart_of_accounts__code"
+              },
+              {
+                "name": "name",
+                "type": "String",
+                "required": true,
+                "description": "ชื่อบัญชี",
+                "id": "chart_of_accounts__name"
+              },
+              {
+                "name": "type",
+                "type": "String",
+                "required": true,
+                "description": "หมวดบัญชี",
+                "enum": [
+                  "asset",
+                  "liability",
+                  "equity",
+                  "income",
+                  "expense"
+                ],
+                "id": "chart_of_accounts__type"
+              },
+              {
+                "name": "parent_id",
+                "type": "ObjectId",
+                "required": false,
+                "description": "บัญชีแม่ (อ้างอิงตัวเอง)",
+                "id": "chart_of_accounts__parent_id"
+              },
+              {
+                "name": "is_active",
+                "type": "Boolean",
+                "required": false,
+                "default": "true",
+                "id": "chart_of_accounts__is_active"
+              }
+            ]
+          }
+        },
+        {
+          "id": "journal_entries",
+          "type": "collection",
+          "position": {
+            "x": 440,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "journal_entries",
+            "description": "สมุดรายวัน",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "journal_entries___id"
+              },
+              {
+                "name": "entry_no",
+                "type": "String",
+                "required": true,
+                "unique": true,
+                "id": "journal_entries__entry_no"
+              },
+              {
+                "name": "date",
+                "type": "Date",
+                "required": true,
+                "id": "journal_entries__date"
+              },
+              {
+                "name": "description",
+                "type": "String",
+                "required": false,
+                "description": "คำอธิบายรายการ",
+                "id": "journal_entries__description"
+              },
+              {
+                "name": "status",
+                "type": "String",
+                "required": false,
+                "enum": [
+                  "draft",
+                  "posted",
+                  "void"
+                ],
+                "default": "draft",
+                "id": "journal_entries__status"
+              },
+              {
+                "name": "lines",
+                "type": "Array",
+                "required": false,
+                "description": "บรรทัดเดบิต/เครดิต (ฝัง)",
+                "of": "Object",
+                "id": "journal_entries__lines"
+              },
+              {
+                "name": "total_debit",
+                "type": "Decimal128",
+                "required": false,
+                "description": "รวมเดบิต",
+                "id": "journal_entries__total_debit"
+              },
+              {
+                "name": "total_credit",
+                "type": "Decimal128",
+                "required": false,
+                "description": "รวมเครดิต",
+                "id": "journal_entries__total_credit"
+              }
+            ]
+          }
+        },
+        {
+          "id": "journal_lines",
+          "type": "collection",
+          "position": {
+            "x": 820,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "journal_lines",
+            "description": "รายการบัญชี",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "journal_lines___id"
+              },
+              {
+                "name": "journal_entry_id",
+                "type": "ObjectId",
+                "required": true,
+                "description": "อ้างอิงสมุดรายวัน (ฝังอยู่ใน)",
+                "id": "journal_lines__journal_entry_id"
+              },
+              {
+                "name": "account_id",
+                "type": "ObjectId",
+                "required": true,
+                "description": "อ้างอิงผังบัญชี",
+                "id": "journal_lines__account_id"
+              },
+              {
+                "name": "debit",
+                "type": "Decimal128",
+                "required": false,
+                "default": "0",
+                "id": "journal_lines__debit"
+              },
+              {
+                "name": "credit",
+                "type": "Decimal128",
+                "required": false,
+                "default": "0",
+                "id": "journal_lines__credit"
+              },
+              {
+                "name": "memo",
+                "type": "String",
+                "required": false,
+                "id": "journal_lines__memo"
+              }
+            ]
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_chart_of_accounts_parent_id_chart_of_accounts",
+          "source": "chart_of_accounts",
+          "sourceHandle": "chart_of_accounts__parent_id-s",
+          "target": "chart_of_accounts",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        },
+        {
+          "id": "e_journal_lines_journal_entry_id_journal_entries",
+          "source": "journal_lines",
+          "sourceHandle": "journal_lines__journal_entry_id-s",
+          "target": "journal_entries",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "embed",
+            "cardinality": "1-n"
+          }
+        },
+        {
+          "id": "e_journal_lines_account_id_chart_of_accounts",
+          "source": "journal_lines",
+          "sourceHandle": "journal_lines__account_id-s",
+          "target": "chart_of_accounts",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        }
+      ]
+    },
+    {
+      "name": "5) บุคคล (HR)",
+      "nodes": [
+        {
+          "id": "departments",
+          "type": "collection",
+          "position": {
+            "x": 60,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "departments",
+            "description": "แผนก",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "departments___id"
+              },
+              {
+                "name": "code",
+                "type": "String",
+                "required": true,
+                "description": "รหัสแผนก",
+                "unique": true,
+                "id": "departments__code"
+              },
+              {
+                "name": "name",
+                "type": "String",
+                "required": true,
+                "description": "ชื่อแผนก",
+                "id": "departments__name"
+              },
+              {
+                "name": "manager_id",
+                "type": "ObjectId",
+                "required": false,
+                "description": "หัวหน้าแผนก",
+                "id": "departments__manager_id"
+              },
+              {
+                "name": "parent_id",
+                "type": "ObjectId",
+                "required": false,
+                "description": "แผนกแม่ (อ้างอิงตัวเอง)",
+                "id": "departments__parent_id"
+              }
+            ]
+          }
+        },
+        {
+          "id": "employees",
+          "type": "collection",
+          "position": {
+            "x": 440,
+            "y": 60
+          },
+          "width": 300,
+          "data": {
+            "label": "employees",
+            "description": "พนักงาน",
+            "fields": [
+              {
+                "name": "_id",
+                "type": "ObjectId",
+                "required": true,
+                "id": "employees___id"
+              },
+              {
+                "name": "emp_code",
+                "type": "String",
+                "required": true,
+                "description": "รหัสพนักงาน",
+                "unique": true,
+                "id": "employees__emp_code"
+              },
+              {
+                "name": "first_name",
+                "type": "String",
+                "required": true,
+                "description": "ชื่อ",
+                "id": "employees__first_name"
+              },
+              {
+                "name": "last_name",
+                "type": "String",
+                "required": true,
+                "description": "นามสกุล",
+                "id": "employees__last_name"
+              },
+              {
+                "name": "department_id",
+                "type": "ObjectId",
+                "required": false,
+                "description": "อ้างอิงแผนก",
+                "id": "employees__department_id"
+              },
+              {
+                "name": "position",
+                "type": "String",
+                "required": false,
+                "description": "ตำแหน่ง",
+                "id": "employees__position"
+              },
+              {
+                "name": "hire_date",
+                "type": "Date",
+                "required": true,
+                "description": "วันเริ่มงาน",
+                "id": "employees__hire_date"
+              },
+              {
+                "name": "salary",
+                "type": "Decimal128",
+                "required": false,
+                "description": "เงินเดือน",
+                "id": "employees__salary"
+              },
+              {
+                "name": "status",
+                "type": "String",
+                "required": false,
+                "description": "สถานะ",
+                "enum": [
+                  "active",
+                  "leave",
+                  "resigned"
+                ],
+                "default": "active",
+                "id": "employees__status"
+              },
+              {
+                "name": "emergency_contact",
+                "type": "Object",
+                "required": false,
+                "description": "ผู้ติดต่อฉุกเฉิน (ฝัง)",
+                "id": "employees__emergency_contact"
+              }
+            ]
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_departments_parent_id_departments",
+          "source": "departments",
+          "sourceHandle": "departments__parent_id-s",
+          "target": "departments",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        },
+        {
+          "id": "e_employees_department_id_departments",
+          "source": "employees",
+          "sourceHandle": "employees__department_id-s",
+          "target": "departments",
+          "targetHandle": "ref",
+          "data": {
+            "kind": "reference",
+            "cardinality": "1-n"
+          }
+        }
+      ]
+    }
+  ]
+}
