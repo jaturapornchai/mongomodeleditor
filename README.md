@@ -104,11 +104,16 @@
 |---|---|
 | project | `list_projects` · `create_project` · `rename_project` · `delete_project` |
 | อ่าน | `list_diagrams` · `get_diagram` · `check_descriptions` (รายงานตัวที่ยังไม่มีคำอธิบายไทย) |
-| diagram | `create_diagram` · `rename_diagram` · `delete_diagram` · `switch_diagram` |
+| diagram | `create_diagram` · `rename_diagram` · `delete_diagram` · `switch_diagram` · `replace_diagram` (bulk import ทั้งผัง atomic) |
 | collection | `add_collection` · `update_collection` · `delete_collection` |
 | field | `add_field` · `update_field` · `delete_field` (รองรับ nested ด้วย `parent`/`children` และ dotted path เช่น `address.geo.lat`) |
 | relation | `add_relation` (reference/embed × cardinality) · `delete_relation` |
 | codegen | `generate_code` — mongosh / mongoose / typescript / markdown / sample / json / **wiki** (wikillm) |
+
+**กฎเสริมที่ caller ควรรู้:**
+- **คำอธิบายภาษาไทยเสมอ** (อ่านรายละเอียดด้านล่าง)
+- `add_collection` **ปฏิเสธ label ซ้ำ**ใน diagram เดียวกัน — ส่ง `replace: true` เพื่อแทนที่ (ลบเส้นเดิมด้วย)
+- error ทุกตัวมี **machine code** นำหน้าข้อความไทย เช่น `[DUPLICATE_LABEL]` `[DESCRIPTION_NOT_THAI]` `[PROJECT_NOT_FOUND]` — parse เอาได้
 
 **บังคับคำอธิบายภาษาไทยเสมอ** — ทุก collection/field ที่สร้างหรือแก้ผ่าน MCP ต้องมี `description` ภาษาไทย (เช็กอักขระไทยจริง) ไม่มี/เป็นอังกฤษ = error พร้อมบอกจุด · เรียก `check_descriptions` เพื่อดูของเก่าที่ยังขาดแล้วเติมให้ครบ · ฝั่ง UI ก็บังคับเหมือนกัน: popup คำอธิบาย validate ไทย + จุดที่ขาดมี 💬 สีเหลืองเตือน
 

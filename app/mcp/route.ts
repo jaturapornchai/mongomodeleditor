@@ -78,10 +78,12 @@ const isThai = (s: string) => THAI_RE.test(s);
 const hasThaiDesc = (d: string | undefined): boolean =>
   d !== undefined && d.trim() !== "" && isThai(d);
 
-/** description ต้องมีและเป็นภาษาไทย — คืนข้อความ error หรือ null ถ้าผ่าน */
+/** description ต้องมีและเป็นภาษาไทย — คืนข้อความ error (พร้อม machine code) หรือ null ถ้าผ่าน */
 function thaiDescError(what: string, desc: string | undefined): string | null {
-  if (desc === undefined || desc.trim() === "") return `${what} ต้องมี description (คำอธิบาย)`;
-  if (!isThai(desc)) return `${what} description ต้องเป็นภาษาไทย (อย่างน้อยมีอักขระไทย) — ได้รับ: "${desc}"`;
+  if (desc === undefined || desc.trim() === "")
+    return `[DESCRIPTION_NOT_THAI] ${what} ต้องมี description (คำอธิบาย)`;
+  if (!isThai(desc))
+    return `[DESCRIPTION_NOT_THAI] ${what} description ต้องเป็นภาษาไทย (อย่างน้อยมีอักขระไทย) — ได้รับ: "${desc}"`;
   return null;
 }
 
@@ -105,7 +107,7 @@ async function requireProject(name: string): Promise<StoredProject | { error: st
   if (p) return p;
   const ws = await getWorkspace();
   const choices = Object.keys(ws.projects).map((n) => `"${n}"`).join(", ") || "(ยังไม่มี project — สร้างด้วย create_project)";
-  return { error: `ไม่พบ project "${name}" — ที่มีอยู่: ${choices}` };
+  return { error: `[PROJECT_NOT_FOUND] ไม่พบ project "${name}" — ที่มีอยู่: ${choices}` };
 }
 
 const save = (project: string, p: StoredProject) =>
@@ -125,7 +127,7 @@ function findDiagram(
     return { id: byName.id, d: p.diagrams[byName.id], name: byName.name };
   }
   const choices = p.tabs.map((t) => `"${t.name}" (${t.id})`).join(", ") || "(ไม่มี diagram)";
-  return { error: `ไม่พบ diagram "${ref}" — ที่มีอยู่: ${choices}` };
+  return { error: `[DIAGRAM_NOT_FOUND] ไม่พบ diagram "${ref}" — ที่มีอยู่: ${choices}` };
 }
 
 /** หา collection จาก node id หรือ label */
@@ -134,7 +136,7 @@ function findNode(d: StoredDiagram, ref: string): N | { error: string } {
   const hit = nodes.find((n) => n.id === ref) ?? nodes.find((n) => n.data.label === ref);
   if (!hit) {
     const choices = nodes.map((n) => n.data.label).join(", ") || "(ไม่มี collection)";
-    return { error: `ไม่พบ collection "${ref}" — ที่มีอยู่: ${choices}` };
+    return { error: `[COLLECTION_NOT_FOUND] ไม่พบ collection "${ref}" — ที่มีอยู่: ${choices}` };
   }
   return hit;
 }
@@ -153,12 +155,12 @@ function findField(
   let container = fields;
   for (let i = 0; i < parts.length; i++) {
     const f = container.find((x) => x.name === parts[i]);
-    if (!f) return { error: `ไม่พบ field "${ref}" (ติดที่ "${parts[i]}")` };
+    if (!f) return { error: `[FIELD_NOT_FOUND] ไม่พบ field "${ref}" (ติดที่ "${parts[i]}")` };
     if (i === parts.length - 1) return { container, field: f };
-    if (!f.children) return { error: `field "${parts[i]}" ไม่มีฟิลด์ย่อย` };
+    if (!f.children) return { error: `[FIELD_NOT_FOUND] field "${parts[i]}" ไม่มีฟิลด์ย่อย` };
     container = f.children;
   }
-  return { error: `ไม่พบ field "${ref}"` };
+  return { error: `[FIELD_NOT_FOUND] ไม่พบ field "${ref}"` };
 }
 
 type FieldInput = {
@@ -442,15 +444,19 @@ function createServer(): McpServer {
     "add_collection",
     {
       description:
-        "เพิ่ม collection ใหม่ — description บังคับต้องเป็นภาษาไทย (ทั้ง collection และทุก field ถ้าส่ง fields) · ถ้าไม่ส่ง fields จะใส่ _id: ObjectId (PK) พร้อมคำอธิบายไทยให้อัตโนมัติ",
+        "เพิ่ม collection ใหม่ — description บังคับต้องเป็นภาษาไทย (ทั้ง collection และทุก field ถ้าส่ง fields; เรียก check_descriptions เพื่อเช็กจุดที่ยังขาดได้) · ถ้าไม่ส่ง fields จะใส่ _id: ObjectId (PK) พร้อมคำอธิบายไทยให้อัตโนมัติ · label ซ้ำใน diagram เดียวกันถูกปฏิเสธ (เว้นแต่ replace: true)",
       inputSchema: {
         project: projectParam,
         diagram: diagramParam,
-        label: z.string().min(1).describe("ชื่อ collection"),
+        label: z.string().min(1).describe("ชื่อ collection — ห้ามซ้ำใน diagram เดียวกัน"),
         description: z
           .string()
           .min(1)
           .describe("คำอธิบาย collection (บังคับ — ต้องเป็นภาษาไทย)"),
+        replace: z
+          .boolean()
+          .optional()
+          .describe("true = แทนที่ collection ชื่อซ้ำเดิม (ลบของเก่าพร้อมเส้นที่เกี่ยว)"),
         x: z.number().optional().describe("ตำแหน่งบน canvas (default ไล่ลงขวา)"),
         y: z.number().optional(),
         fields: z
@@ -459,11 +465,18 @@ function createServer(): McpServer {
           .describe("ฟิลด์เริ่มต้น — ทุก field ต้องมี description ภาษาไทย (รวม children)"),
       },
     },
-    async ({ project, diagram, label, description, x, y, fields }) => {
+    async ({ project, diagram, label, description, replace, x, y, fields }) => {
       const p = await requireProject(project);
       if ("error" in p) return err(p.error);
       const hit = findDiagram(p, diagram);
       if ("error" in hit) return err(hit.error);
+      // label ซ้ำ — ปฏิเสธเว้นแต่ส่ง replace: true
+      const dup = (hit.d.nodes as N[]).find((n) => n.data.label === label);
+      if (dup && !replace) {
+        return err(
+          `[DUPLICATE_LABEL] collection "${label}" มีอยู่แล้วใน diagram นี้ — ส่ง replace: true เพื่อแทนที่ หรือใช้ชื่ออื่น`
+        );
+      }
       // บังคับคำอธิบายไทย — collection และทุก field (recursive)
       const collErr = thaiDescError(`collection "${label}"`, description);
       if (collErr) return err(collErr);
@@ -471,12 +484,22 @@ function createServer(): McpServer {
         const fErr = fieldsThaiError(fields);
         if (fErr) return err(fErr);
       }
+      let position = { x: x ?? 0, y: y ?? 0 };
+      if (dup) {
+        // แทนที่: ลบ node เดิม + เส้นที่เกี่ยว คงตำแหน่งเดิมไว้
+        position = { x: x ?? dup.position.x, y: y ?? dup.position.y };
+        hit.d.nodes = (hit.d.nodes as N[]).filter((n) => n.id !== dup.id);
+        hit.d.edges = (hit.d.edges as E[]).filter(
+          (e) => e.source !== dup.id && e.target !== dup.id
+        );
+      }
       const nodes = hit.d.nodes as N[];
       const count = nodes.length;
+      if (!dup) position = { x: x ?? 120 + count * 40, y: y ?? 120 + count * 40 };
       const node: N = {
         id: uid(),
         type: "collection",
-        position: { x: x ?? 120 + count * 40, y: y ?? 120 + count * 40 },
+        position,
         data: {
           label,
           description,
@@ -495,7 +518,7 @@ function createServer(): McpServer {
       };
       nodes.push(node);
       await save(project, p);
-      return ok({ id: node.id, label });
+      return ok({ id: node.id, label, replaced: dup !== undefined });
     }
   );
 
@@ -558,7 +581,7 @@ function createServer(): McpServer {
     "add_field",
     {
       description:
-        "เพิ่มฟิลด์ใน collection — description บังคับต้องเป็นภาษาไทย (รวม children) · ซ้อนได้ด้วย parent (dotted path ไปยัง Object/Array<Object>)",
+        "เพิ่มฟิลด์ใน collection — description บังคับต้องเป็นภาษาไทย (รวม children; เรียก check_descriptions เพื่อเช็กจุดที่ยังขาดได้) · ซ้อนได้ด้วย parent (dotted path ไปยัง Object/Array<Object>)",
       inputSchema: {
         project: projectParam,
         diagram: diagramParam,
@@ -606,7 +629,7 @@ function createServer(): McpServer {
     "update_field",
     {
       description:
-        "แก้คุณสมบัติฟิลด์ (ส่งเฉพาะที่จะแก้) — หลังแก้ฟิลด์ต้องมีคำอธิบายภาษาไทยเสมอ · อ้าง field ด้วย id หรือ dotted path ของชื่อ",
+        "แก้คุณสมบัติฟิลด์ (ส่งเฉพาะที่จะแก้) — หลังแก้ฟิลด์ต้องมีคำอธิบายภาษาไทยเสมอ (เรียก check_descriptions เพื่อเช็กจุดที่ยังขาดได้) · อ้าง field ด้วย id หรือ dotted path ของชื่อ",
       inputSchema: {
         project: projectParam,
         diagram: diagramParam,
@@ -782,6 +805,124 @@ function createServer(): McpServer {
       hit.d.edges = edges;
       await save(project, p);
       return ok("ลบเส้นความสัมพันธ์แล้ว");
+    }
+  );
+
+  // ----- bulk import -----
+
+  server.registerTool(
+    "replace_diagram",
+    {
+      description:
+        "เขียน diagram ทับทั้งก้อนในครั้งเดียว (bulk import): collections พร้อม fields ซ้อน + relations — validate ทั้งหมดก่อนแล้วค่อยเขียน (atomic, rev +1 ครั้งเดียว) · description ไทยบังคับเหมือน add_collection · ใช้สร้าง diagram ใหม่ทั้งผังในคำสั่งเดียวแทนการเรียก add_* หลายรอบ",
+      inputSchema: {
+        project: projectParam,
+        diagram: diagramParam,
+        collections: z
+          .array(
+            z.object({
+              label: z.string().min(1).describe("ชื่อ collection — ห้ามซ้ำใน payload"),
+              description: z.string().min(1).describe("คำอธิบาย (บังคับ — ภาษาไทย)"),
+              x: z.number().optional(),
+              y: z.number().optional(),
+              width: z.number().optional(),
+              fields: z
+                .array(fieldInputSchema)
+                .optional()
+                .describe("ทุก field ต้องมี description ภาษาไทย (รวม children)"),
+            })
+          )
+          .min(1),
+        relations: z
+          .array(
+            z.object({
+              collection: z.string().describe("label collection ต้นทาง"),
+              field: z.string().describe("ชื่อฟิลด์ต้นทาง"),
+              target: z.string().describe("label collection เป้าหมาย"),
+              kind: z.enum(["reference", "embed"]).optional(),
+              cardinality: z.enum(["1-1", "1-n", "n-n"]).optional(),
+            })
+          )
+          .optional(),
+      },
+    },
+    async ({ project, diagram, collections, relations }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      // validate ทั้งหมดก่อน — ห้ามเขียนค้าง (all-or-nothing)
+      const seen = new Set<string>();
+      for (const c of collections) {
+        if (seen.has(c.label)) return err(`[DUPLICATE_LABEL] label "${c.label}" ซ้ำใน payload`);
+        seen.add(c.label);
+        const dErr = thaiDescError(`collection "${c.label}"`, c.description);
+        if (dErr) return err(dErr);
+        if (c.fields) {
+          const fErr = fieldsThaiError(c.fields);
+          if (fErr) return err(fErr);
+        }
+      }
+      // สร้าง nodes (id ใหม่ทั้งหมด)
+      const nodes: N[] = collections.map((c, i) => ({
+        id: uid(),
+        type: "collection",
+        position: { x: c.x ?? 120 + i * 40, y: c.y ?? 120 + i * 40 },
+        ...(c.width !== undefined && { width: c.width }),
+        data: {
+          label: c.label,
+          description: c.description,
+          fields:
+            c.fields?.map(toField) ??
+            [
+              {
+                id: uid(),
+                name: "_id",
+                type: "ObjectId" as const,
+                required: true,
+                description: "รหัส ObjectID ของเอกสาร",
+              },
+            ],
+        },
+      }));
+      const nodeByLabel = new Map(nodes.map((n) => [n.data.label, n]));
+      // สร้าง edges (อ้าง field ด้วยชื่อ → id ใหม่)
+      const edges: E[] = [];
+      for (const r of relations ?? []) {
+        const src = nodeByLabel.get(r.collection);
+        if (!src)
+          return err(`[COLLECTION_NOT_FOUND] ไม่พบ collection ต้นทาง "${r.collection}" ใน payload`);
+        const tgt = nodeByLabel.get(r.target);
+        if (!tgt)
+          return err(`[COLLECTION_NOT_FOUND] ไม่พบ collection เป้าหมาย "${r.target}" ใน payload`);
+        const f = src.data.fields.find((x) => x.name === r.field);
+        if (!f)
+          return err(`[FIELD_NOT_FOUND] ไม่พบ field "${r.field}" ใน collection "${r.collection}"`);
+        const embed = r.kind === "embed";
+        edges.push({
+          id: `e_${src.data.label}_${f.name}_${tgt.data.label}`,
+          source: src.id,
+          sourceHandle: `${f.id}-s`,
+          target: tgt.id,
+          targetHandle: "ref",
+          data: {
+            kind: embed ? "embed" : "reference",
+            ...(r.cardinality !== undefined && { cardinality: r.cardinality }),
+          },
+          ...(embed && {
+            animated: false,
+            style: { stroke: "#64748b", strokeWidth: 1.5, strokeDasharray: "6 3" },
+          }),
+        });
+      }
+      hit.d.nodes = nodes;
+      hit.d.edges = edges;
+      await save(project, p); // atomic — เขียนครั้งเดียว rev +1 ครั้งเดียว
+      return ok({
+        collections: nodes.length,
+        fields: nodes.reduce((s, n) => s + n.data.fields.length, 0),
+        relations: edges.length,
+      });
     }
   );
 
