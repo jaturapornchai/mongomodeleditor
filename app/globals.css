@@ -33,3 +33,18 @@ body {
 .react-flow__edge.selected .react-flow__edge-path {
   stroke: #ef4444 !important;
 }
+
+/* wiki viewer — note เปลี่ยนแล้ว fade-in */
+@keyframes wiki-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.wiki-note-enter {
+  animation: wiki-fade-in 0.25s ease-out;
+}

@@ -1,0 +1,751 @@
+// app/mcp/route.ts — MCP server ของ MongoModel (Streamable HTTP, stateless)
+// AI ภายนอกเชื่อมที่ http://localhost:3100/mcp แล้วอ่าน/เพิ่ม/ลบ/แก้ไข diagram ได้ครบ
+// ทุก tool ต้องระบุ project เสมอ (ทำได้หลาย project พร้อมกัน — ดูรายชื่อด้วย list_projects)
+// ทุก mutation บันทึกลง data/projects.json ทันทีผ่าน store (auto save) และเพิ่ม rev ให้ UI auto refresh
+
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { z } from "zod";
+import {
+  getProject,
+  saveProject,
+  createProject,
+  renameProject,
+  deleteProject,
+  listProjects,
+  getWorkspace,
+  validProjectName,
+  type StoredProject,
+  type StoredDiagram,
+} from "../store";
+import {
+  FIELD_TYPES,
+  type Field,
+  type FieldType,
+  type CollectionData,
+  type EdgeRelData,
+  type GenNode,
+  type GenEdge,
+  toMongosh,
+  toMongoose,
+  toTypeScript,
+  toMarkdown,
+  toSampleDoc,
+  toWiki,
+} from "../schema";
+
+export const runtime = "nodejs";
+
+// ---------- ชนิดข้อมูล node/edge แบบโครงสร้างตรง UI ----------
+
+type N = {
+  id: string;
+  type?: string;
+  position: { x: number; y: number };
+  width?: number;
+  data: CollectionData;
+};
+type E = {
+  id: string;
+  source: string;
+  sourceHandle?: string | null;
+  target: string;
+  targetHandle?: string | null;
+  data?: EdgeRelData;
+};
+
+const uid = () => crypto.randomUUID().slice(0, 8);
+
+// ---------- helpers ----------
+
+const ok = (data: unknown) => ({
+  content: [
+    { type: "text" as const, text: typeof data === "string" ? data : JSON.stringify(data, null, 2) },
+  ],
+});
+const err = (message: string) => ({
+  content: [{ type: "text" as const, text: `⚠ ${message}` }],
+  isError: true,
+});
+
+/** โหลด project หรือคืนข้อความ error พร้อมรายชื่อที่มี */
+async function requireProject(name: string): Promise<StoredProject | { error: string }> {
+  const p = await getProject(name);
+  if (p) return p;
+  const ws = await getWorkspace();
+  const choices = Object.keys(ws.projects).map((n) => `"${n}"`).join(", ") || "(ยังไม่มี project — สร้างด้วย create_project)";
+  return { error: `ไม่พบ project "${name}" — ที่มีอยู่: ${choices}` };
+}
+
+const save = (project: string, p: StoredProject) =>
+  saveProject(project, { tabs: p.tabs, cur: p.cur, diagrams: p.diagrams });
+
+/** หา diagram จาก id หรือชื่อ (ไม่ส่ง = diagram ปัจจุบัน) */
+function findDiagram(
+  p: StoredProject,
+  ref: string | undefined
+): { id: string; d: StoredDiagram; name: string } | { error: string } {
+  const id = ref ?? p.cur;
+  if (p.diagrams[id]) {
+    return { id, d: p.diagrams[id], name: p.tabs.find((t) => t.id === id)?.name ?? id };
+  }
+  const byName = p.tabs.find((t) => t.name === ref);
+  if (byName && p.diagrams[byName.id]) {
+    return { id: byName.id, d: p.diagrams[byName.id], name: byName.name };
+  }
+  const choices = p.tabs.map((t) => `"${t.name}" (${t.id})`).join(", ") || "(ไม่มี diagram)";
+  return { error: `ไม่พบ diagram "${ref}" — ที่มีอยู่: ${choices}` };
+}
+
+/** หา collection จาก node id หรือ label */
+function findNode(d: StoredDiagram, ref: string): N | { error: string } {
+  const nodes = d.nodes as N[];
+  const hit = nodes.find((n) => n.id === ref) ?? nodes.find((n) => n.data.label === ref);
+  if (!hit) {
+    const choices = nodes.map((n) => n.data.label).join(", ") || "(ไม่มี collection)";
+    return { error: `ไม่พบ collection "${ref}" — ที่มีอยู่: ${choices}` };
+  }
+  return hit;
+}
+
+/**
+ * หา field จาก id หรือ dotted path ของชื่อ (เช่น "address.geo.lat") — คืน array ที่ field อยู่
+ * เพื่อให้ caller push/splice ได้ตรงๆ
+ */
+function findField(
+  fields: Field[],
+  ref: string
+): { container: Field[]; field: Field } | { error: string } {
+  const byId = fields.find((f) => f.id === ref);
+  if (byId) return { container: fields, field: byId };
+  const parts = ref.split(".");
+  let container = fields;
+  for (let i = 0; i < parts.length; i++) {
+    const f = container.find((x) => x.name === parts[i]);
+    if (!f) return { error: `ไม่พบ field "${ref}" (ติดที่ "${parts[i]}")` };
+    if (i === parts.length - 1) return { container, field: f };
+    if (!f.children) return { error: `field "${parts[i]}" ไม่มีฟิลด์ย่อย` };
+    container = f.children;
+  }
+  return { error: `ไม่พบ field "${ref}"` };
+}
+
+type FieldInput = {
+  name: string;
+  type: FieldType;
+  required?: boolean;
+  description?: string;
+  of?: FieldType;
+  enum?: string[];
+  default?: string;
+  unique?: boolean;
+  children?: FieldInput[];
+};
+
+const toField = (input: FieldInput): Field => ({
+  id: uid(),
+  name: input.name,
+  type: input.type,
+  required: input.required ?? false,
+  ...(input.description !== undefined && { description: input.description }),
+  ...(input.of !== undefined && { of: input.of }),
+  ...(input.enum !== undefined && { enum: input.enum }),
+  ...(input.default !== undefined && { default: input.default }),
+  ...(input.unique !== undefined && { unique: input.unique }),
+  ...(input.children !== undefined && { children: input.children.map(toField) }),
+});
+
+const toGenNode = (n: N): GenNode => ({ id: n.id, data: n.data });
+const toGenEdge = (e: E): GenEdge => ({
+  source: e.source,
+  sourceHandle: e.sourceHandle,
+  target: e.target,
+  targetHandle: e.targetHandle,
+  data: e.data,
+});
+
+// ---------- zod schemas ----------
+
+const projectParam = z
+  .string()
+  .min(1)
+  .describe("ชื่อ project (บังคับเสมอ — ดูรายชื่อด้วย list_projects)");
+const diagramParam = z
+  .string()
+  .optional()
+  .describe("id หรือชื่อของ diagram (ไม่ส่ง = diagram ปัจจุบัน)");
+const collectionParam = z.string().describe("node id หรือ label ของ collection");
+
+// zod v4: recursive ด้วย getter (infer ชนิดให้อัตโนมัติ)
+const fieldInputSchema = z.object({
+  name: z.string().min(1).describe("ชื่อฟิลด์"),
+  type: z.enum(FIELD_TYPES).describe("ชนิดข้อมูล"),
+  required: z.boolean().optional(),
+  description: z.string().optional(),
+  of: z.enum(FIELD_TYPES).optional().describe("ชนิดสมาชิก (เฉพาะ type=Array)"),
+  enum: z.array(z.string()).optional().describe("ค่าที่อนุญาต"),
+  default: z.string().optional().describe("ค่าเริ่มต้น (string เสมอ)"),
+  unique: z.boolean().optional(),
+  get children() {
+    return z.array(fieldInputSchema).optional().describe("ฟิลด์ย่อย (type=Object หรือ Array<Object>)");
+  },
+});
+
+// ---------- สร้าง server + ลงทะเบียน tools ----------
+
+function createServer(): McpServer {
+  const server = new McpServer({ name: "mongomodel", version: "2.0.0" });
+
+  // ----- จัดการ project -----
+
+  server.registerTool(
+    "list_projects",
+    { description: "แสดงรายการ project ทั้งหมด (ชื่อ, จำนวน diagram/collection, เวลาแก้ล่าสุด)" },
+    async () => ok(await listProjects())
+  );
+
+  server.registerTool(
+    "create_project",
+    {
+      description: "สร้าง project ใหม่ (ว่าง มี Main Diagram ให้)",
+      inputSchema: { name: z.string().min(1).describe("ชื่อ project — ห้ามซ้ำกับที่มีอยู่") },
+    },
+    async ({ name }) => {
+      if (!validProjectName(name)) return err("ชื่อ project ไม่ถูกต้อง (ห้าม / \\ : * ? \" < > |)");
+      try {
+        await createProject(name.trim());
+        return ok({ name: name.trim() });
+      } catch (e) {
+        return err((e as Error).message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "rename_project",
+    {
+      description: "เปลี่ยนชื่อ project",
+      inputSchema: { project: projectParam, name: z.string().min(1).describe("ชื่อใหม่") },
+    },
+    async ({ project, name }) => {
+      if (!validProjectName(name)) return err("ชื่อ project ไม่ถูกต้อง (ห้าม / \\ : * ? \" < > |)");
+      try {
+        await renameProject(project, name.trim());
+        return ok({ name: name.trim() });
+      } catch (e) {
+        return err((e as Error).message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "delete_project",
+    {
+      description: "ลบ project ถาวร (ทุก diagram ในนั้นหายหมด)",
+      inputSchema: { project: projectParam },
+    },
+    async ({ project }) => {
+      try {
+        await deleteProject(project);
+        return ok(`ลบ project "${project}" แล้ว`);
+      } catch (e) {
+        return err((e as Error).message);
+      }
+    }
+  );
+
+  // ----- อ่าน -----
+
+  server.registerTool(
+    "list_diagrams",
+    {
+      description: "แสดงรายการ diagram ทั้งหมดใน project (id, ชื่อ, จำนวน collection, อันที่กำลังเปิด)",
+      inputSchema: { project: projectParam },
+    },
+    async ({ project }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      return ok(
+        p.tabs.map((t) => ({
+          id: t.id,
+          name: t.name,
+          collections: (p.diagrams[t.id]?.nodes.length ?? 0) as number,
+          current: t.id === p.cur,
+        }))
+      );
+    }
+  );
+
+  server.registerTool(
+    "get_diagram",
+    {
+      description:
+        "อ่าน diagram เต็ม (nodes = collection พร้อม fields, edges = ความสัมพันธ์) เอาไปใช้ต่อได้",
+      inputSchema: { project: projectParam, diagram: diagramParam },
+    },
+    async ({ project, diagram }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      return ok({ id: hit.id, name: hit.name, nodes: hit.d.nodes, edges: hit.d.edges });
+    }
+  );
+
+  // ----- จัดการ diagram -----
+
+  server.registerTool(
+    "create_diagram",
+    {
+      description: "สร้าง diagram ใหม่ (ว่าง) แล้วสลับไปที่มัน",
+      inputSchema: { project: projectParam, name: z.string().min(1).describe("ชื่อ diagram") },
+    },
+    async ({ project, name }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const id = uid();
+      p.tabs.push({ id, name });
+      p.diagrams[id] = { nodes: [], edges: [] };
+      p.cur = id;
+      await save(project, p);
+      return ok({ id, name });
+    }
+  );
+
+  server.registerTool(
+    "rename_diagram",
+    {
+      description: "เปลี่ยนชื่อ diagram",
+      inputSchema: { project: projectParam, diagram: diagramParam, name: z.string().min(1) },
+    },
+    async ({ project, diagram, name }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      const tab = p.tabs.find((t) => t.id === hit.id);
+      if (tab) tab.name = name;
+      await save(project, p);
+      return ok({ id: hit.id, name });
+    }
+  );
+
+  server.registerTool(
+    "delete_diagram",
+    {
+      description: "ลบ diagram ถาวร (ถ้าเหลือ 0 จะสร้าง Main Diagram ว่างให้)",
+      inputSchema: { project: projectParam, diagram: diagramParam },
+    },
+    async ({ project, diagram }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      p.tabs = p.tabs.filter((t) => t.id !== hit.id);
+      delete p.diagrams[hit.id];
+      if (!p.tabs.length) {
+        const id = uid();
+        p.tabs = [{ id, name: "Main Diagram" }];
+        p.diagrams[id] = { nodes: [], edges: [] };
+      }
+      if (p.cur === hit.id || !p.diagrams[p.cur]) p.cur = p.tabs[0].id;
+      await save(project, p);
+      return ok(`ลบ "${hit.name}" แล้ว`);
+    }
+  );
+
+  server.registerTool(
+    "switch_diagram",
+    {
+      description: "สลับ diagram ปัจจุบัน (อันที่ UI กำลังเปิด / default ของ tools อื่น)",
+      inputSchema: { project: projectParam, diagram: diagramParam },
+    },
+    async ({ project, diagram }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      p.cur = hit.id;
+      await save(project, p);
+      return ok({ current: hit.id, name: hit.name });
+    }
+  );
+
+  // ----- จัดการ collection -----
+
+  server.registerTool(
+    "add_collection",
+    {
+      description:
+        "เพิ่ม collection ใหม่ — ถ้าไม่ส่ง fields จะใส่ _id: ObjectId (PK) ให้อัตโนมัติเหมือน UI",
+      inputSchema: {
+        project: projectParam,
+        diagram: diagramParam,
+        label: z.string().min(1).describe("ชื่อ collection"),
+        description: z.string().optional(),
+        x: z.number().optional().describe("ตำแหน่งบน canvas (default ไล่ลงขวา)"),
+        y: z.number().optional(),
+        fields: z.array(fieldInputSchema).optional().describe("ฟิลด์เริ่มต้น (รองรับ children ซ้อน)"),
+      },
+    },
+    async ({ project, diagram, label, description, x, y, fields }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      const nodes = hit.d.nodes as N[];
+      const count = nodes.length;
+      const node: N = {
+        id: uid(),
+        type: "collection",
+        position: { x: x ?? 120 + count * 40, y: y ?? 120 + count * 40 },
+        data: {
+          label,
+          ...(description !== undefined && { description }),
+          fields:
+            fields?.map(toField) ??
+            [{ id: uid(), name: "_id", type: "ObjectId", required: true }],
+        },
+      };
+      nodes.push(node);
+      await save(project, p);
+      return ok({ id: node.id, label });
+    }
+  );
+
+  server.registerTool(
+    "update_collection",
+    {
+      description: "แก้ชื่อ / คำอธิบาย collection",
+      inputSchema: {
+        project: projectParam,
+        diagram: diagramParam,
+        collection: collectionParam,
+        label: z.string().min(1).optional(),
+        description: z.string().optional().describe("ส่งสตริงว่างเพื่อลบคำอธิบาย"),
+      },
+    },
+    async ({ project, diagram, collection, label, description }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      const node = findNode(hit.d, collection);
+      if ("error" in node) return err(node.error);
+      if (label !== undefined) node.data.label = label;
+      if (description !== undefined) {
+        if (description === "") delete node.data.description;
+        else node.data.description = description;
+      }
+      await save(project, p);
+      return ok({ id: node.id, label: node.data.label });
+    }
+  );
+
+  server.registerTool(
+    "delete_collection",
+    {
+      description: "ลบ collection พร้อมเส้นความสัมพันธ์ที่เกี่ยวข้องทั้งหมด",
+      inputSchema: { project: projectParam, diagram: diagramParam, collection: collectionParam },
+    },
+    async ({ project, diagram, collection }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      const node = findNode(hit.d, collection);
+      if ("error" in node) return err(node.error);
+      hit.d.nodes = (hit.d.nodes as N[]).filter((n) => n.id !== node.id);
+      hit.d.edges = (hit.d.edges as E[]).filter(
+        (e) => e.source !== node.id && e.target !== node.id
+      );
+      await save(project, p);
+      return ok(`ลบ collection "${node.data.label}" แล้ว`);
+    }
+  );
+
+  // ----- จัดการ field -----
+
+  server.registerTool(
+    "add_field",
+    {
+      description:
+        "เพิ่มฟิลด์ใน collection — ซ้อนได้ด้วย parent (dotted path ไปยัง Object/Array<Object>) หรือ children",
+      inputSchema: {
+        project: projectParam,
+        diagram: diagramParam,
+        collection: collectionParam,
+        parent: z
+          .string()
+          .optional()
+          .describe("dotted path ของฟิลด์แม่ (เช่น \"address.geo\") — ไม่ส่ง = ฟิลด์ระดับบน"),
+        name: z.string().min(1),
+        type: z.enum(FIELD_TYPES),
+        required: z.boolean().optional(),
+        description: z.string().optional(),
+        of: z.enum(FIELD_TYPES).optional(),
+        enum: z.array(z.string()).optional(),
+        default: z.string().optional(),
+        unique: z.boolean().optional(),
+        children: z.array(fieldInputSchema).optional(),
+      },
+    },
+    async ({ project, diagram, collection, parent, ...input }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      const node = findNode(hit.d, collection);
+      if ("error" in node) return err(node.error);
+      let container = node.data.fields;
+      if (parent !== undefined) {
+        const ph = findField(container, parent);
+        if ("error" in ph) return err(ph.error);
+        ph.field.children ??= [];
+        container = ph.field.children;
+      }
+      const field = toField(input as FieldInput);
+      container.push(field);
+      await save(project, p);
+      return ok({ id: field.id, name: field.name });
+    }
+  );
+
+  server.registerTool(
+    "update_field",
+    {
+      description: "แก้คุณสมบัติฟิลด์ (ส่งเฉพาะที่จะแก้) — อ้าง field ด้วย id หรือ dotted path ของชื่อ",
+      inputSchema: {
+        project: projectParam,
+        diagram: diagramParam,
+        collection: collectionParam,
+        field: z.string().describe("id หรือ dotted path เช่น \"address.geo.lat\""),
+        name: z.string().min(1).optional(),
+        type: z.enum(FIELD_TYPES).optional(),
+        required: z.boolean().optional(),
+        description: z.string().optional().describe("ส่งสตริงว่างเพื่อลบ"),
+        of: z.enum(FIELD_TYPES).optional(),
+        enum: z.array(z.string()).optional().describe("ส่ง [] เพื่อลบ enum"),
+        default: z.string().optional().describe("ส่งสตริงว่างเพื่อลบค่าเริ่มต้น"),
+        unique: z.boolean().optional(),
+        children: z.array(fieldInputSchema).optional().describe("แทนที่ฟิลด์ย่อยทั้งชุด"),
+      },
+    },
+    async ({ project, diagram, collection, field: ref, children, ...patch }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      const node = findNode(hit.d, collection);
+      if ("error" in node) return err(node.error);
+      const fh = findField(node.data.fields, ref);
+      if ("error" in fh) return err(fh.error);
+      const f = fh.field;
+      if (patch.name !== undefined) f.name = patch.name;
+      if (patch.type !== undefined) f.type = patch.type;
+      if (patch.required !== undefined) f.required = patch.required;
+      if (patch.description !== undefined) {
+        if (patch.description === "") delete f.description;
+        else f.description = patch.description;
+      }
+      if (patch.of !== undefined) f.of = patch.of;
+      if (patch.enum !== undefined) {
+        if (patch.enum.length === 0) delete f.enum;
+        else f.enum = patch.enum;
+      }
+      if (patch.default !== undefined) {
+        if (patch.default === "") delete f.default;
+        else f.default = patch.default;
+      }
+      if (patch.unique !== undefined) f.unique = patch.unique;
+      if (children !== undefined) f.children = children.map(toField);
+      await save(project, p);
+      return ok({ id: f.id, name: f.name });
+    }
+  );
+
+  server.registerTool(
+    "delete_field",
+    {
+      description: "ลบฟิลด์ (พร้อมเส้นอ้างอิงที่ผูกกับมัน) — อ้างด้วย id หรือ dotted path",
+      inputSchema: {
+        project: projectParam,
+        diagram: diagramParam,
+        collection: collectionParam,
+        field: z.string().describe("id หรือ dotted path เช่น \"address.geo.lat\""),
+      },
+    },
+    async ({ project, diagram, collection, field: ref }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      const node = findNode(hit.d, collection);
+      if ("error" in node) return err(node.error);
+      const fh = findField(node.data.fields, ref);
+      if ("error" in fh) return err(fh.error);
+      fh.container.splice(fh.container.indexOf(fh.field), 1);
+      hit.d.edges = (hit.d.edges as E[]).filter(
+        (e) => !(e.source === node.id && e.sourceHandle === `${fh.field.id}-s`)
+      );
+      await save(project, p);
+      return ok(`ลบ field "${fh.field.name}" แล้ว`);
+    }
+  );
+
+  // ----- จัดการความสัมพันธ์ -----
+
+  server.registerTool(
+    "add_relation",
+    {
+      description:
+        "สร้างเส้นความสัมพันธ์จากฟิลด์ต้นทาง → collection เป้าหมาย (1 ฟิลด์ = 1 อ้างอิง: ถ้ามีอยู่แล้วจะย้ายปลายทาง) — reference ทำให้ codegen ใส่ ref/index, embed = เส้นประ",
+      inputSchema: {
+        project: projectParam,
+        diagram: diagramParam,
+        collection: collectionParam.describe("collection ต้นทาง"),
+        field: z.string().describe("id หรือชื่อฟิลด์ต้นทาง (ระดับบน)"),
+        target: z.string().describe("node id หรือ label ของ collection เป้าหมาย"),
+        kind: z.enum(["reference", "embed"]).optional().describe("default reference"),
+        cardinality: z.enum(["1-1", "1-n", "n-n"]).optional(),
+      },
+    },
+    async ({ project, diagram, collection, field, target, kind, cardinality }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      const node = findNode(hit.d, collection);
+      if ("error" in node) return err(node.error);
+      const targetNode = findNode(hit.d, target);
+      if ("error" in targetNode) return err(targetNode.error);
+      const fh = findField(node.data.fields, field);
+      if ("error" in fh) return err(fh.error);
+      const relKind = kind ?? "reference";
+      const embed = relKind === "embed";
+      const edges = (hit.d.edges as E[]).filter(
+        (e) => !(e.source === node.id && e.sourceHandle === `${fh.field.id}-s`)
+      );
+      const edge: E = {
+        id: `e_${node.data.label}_${fh.field.name}_${targetNode.data.label}`,
+        source: node.id,
+        sourceHandle: `${fh.field.id}-s`,
+        target: targetNode.id,
+        targetHandle: "ref",
+        data: { kind: relKind, ...(cardinality !== undefined && { cardinality }) },
+        // reference ปล่อยให้ defaultEdgeOptions ของ UI ใส่ animated/style เอง
+        ...(embed && {
+          animated: false,
+          style: { stroke: "#64748b", strokeWidth: 1.5, strokeDasharray: "6 3" },
+        }),
+      };
+      edges.push(edge);
+      hit.d.edges = edges;
+      await save(project, p);
+      return ok({ id: edge.id, from: `${node.data.label}.${fh.field.name}`, to: targetNode.data.label });
+    }
+  );
+
+  server.registerTool(
+    "delete_relation",
+    {
+      description: "ลบเส้นความสัมพันธ์ — อ้างด้วย edge id หรือฟิลด์ต้นทาง",
+      inputSchema: {
+        project: projectParam,
+        diagram: diagramParam,
+        relation: z.string().optional().describe("edge id"),
+        collection: collectionParam.optional(),
+        field: z.string().optional().describe("id หรือชื่อฟิลด์ต้นทาง"),
+      },
+    },
+    async ({ project, diagram, relation, collection, field }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      let edges = hit.d.edges as E[];
+      const before = edges.length;
+      if (relation !== undefined) {
+        edges = edges.filter((e) => e.id !== relation);
+      } else if (collection !== undefined && field !== undefined) {
+        const node = findNode(hit.d, collection);
+        if ("error" in node) return err(node.error);
+        const fh = findField(node.data.fields, field);
+        if ("error" in fh) return err(fh.error);
+        edges = edges.filter(
+          (e) => !(e.source === node.id && e.sourceHandle === `${fh.field.id}-s`)
+        );
+      } else {
+        return err("ต้องส่ง relation (edge id) หรือ collection + field");
+      }
+      if (edges.length === before) return err("ไม่พบเส้นความสัมพันธ์ที่ระบุ");
+      hit.d.edges = edges;
+      await save(project, p);
+      return ok("ลบเส้นความสัมพันธ์แล้ว");
+    }
+  );
+
+  // ----- สร้างโค้ด -----
+
+  server.registerTool(
+    "generate_code",
+    {
+      description:
+        "สร้างโค้ดจาก diagram: mongosh (createCollection+validator+index), mongoose, typescript, markdown (data dictionary), sample (ตัวอย่าง JSON document), json (โครง diagram ดิบ), wiki (ชุดไฟล์ markdown โครงสร้าง wikillm: Home.md + collections/ + types/ — คืนเป็น JSON map ชื่อไฟล์→เนื้อหา)",
+      inputSchema: {
+        project: projectParam,
+        diagram: diagramParam,
+        format: z.enum(["mongosh", "mongoose", "typescript", "markdown", "sample", "json", "wiki"]),
+        collection: collectionParam
+          .optional()
+          .describe("จำกัดเฉพาะ collection เดียว (ไม่ส่ง = ทั้ง diagram)"),
+      },
+    },
+    async ({ project, diagram, format, collection }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      let nodes = hit.d.nodes as N[];
+      let edges = hit.d.edges as E[];
+      if (collection !== undefined) {
+        const node = findNode(hit.d, collection);
+        if ("error" in node) return err(node.error);
+        nodes = [node];
+        edges = edges.filter((e) => e.source === node.id || e.target === node.id);
+      }
+      const gn = nodes.map(toGenNode);
+      const ge = edges.map(toGenEdge);
+      if (format === "wiki") return ok(toWiki(gn, ge, project));
+      const text =
+        format === "mongosh"
+          ? toMongosh(gn, ge)
+          : format === "mongoose"
+            ? toMongoose(gn, ge)
+            : format === "typescript"
+              ? toTypeScript(gn, ge)
+              : format === "markdown"
+                ? toMarkdown(gn, ge)
+                : format === "sample"
+                  ? gn.map((n) => `// ${n.data.label}\n` + toSampleDoc(n)).join("\n\n")
+                  : JSON.stringify({ nodes, edges }, null, 2);
+      return ok(text);
+    }
+  );
+
+  return server;
+}
+
+// ---------- route handler (stateless: server + transport ใหม่ทุก request) ----------
+
+async function handle(req: Request): Promise<Response> {
+  const server = createServer();
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined, // stateless — ไม่ต้องจัดการ session
+    enableJsonResponse: true, // ตอบเป็น JSON เลย ไม่ต้องเปิด SSE stream
+  });
+  await server.connect(transport);
+  return transport.handleRequest(req);
+}
+
+export const POST = handle;

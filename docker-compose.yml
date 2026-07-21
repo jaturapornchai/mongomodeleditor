@@ -1,0 +1,17 @@
+# MongoModel + MCP server — รันทั้งระบบใน Docker Desktop
+# ขึ้นระบบ:  docker-compose up -d --build   (หรือ npm run docker:up)
+# ปิด:      docker-compose down            (หรือ npm run docker:down)
+#
+# เปิดใช้:  UI  → http://localhost:3100
+#           MCP → http://localhost:3100/mcp  (ชี้จาก AI client ได้เหมือนเดิม)
+# ข้อมูลทุกโปรเจกต์อยู่ที่ ./data บน host (mount เข้า container) — ลบ container ข้อมูลไม่หาย
+
+services:
+  mongomodel:
+    build: .
+    container_name: mongomodel
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

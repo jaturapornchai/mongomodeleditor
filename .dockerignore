@@ -1,0 +1,16 @@
+# dependencies / build output
+node_modules
+.next
+
+# ข้อมูลจริง — mount จาก host ตอนรัน ไม่ฝังใน image
+data
+
+# vcs / docs / ของไม่จำเป็น
+.git
+.claude
+.playwright-mcp
+*.png
+*.log
+Dockerfile
+docker-compose.yml
+.dockerignore

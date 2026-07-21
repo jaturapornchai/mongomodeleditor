@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ข้อมูล diagram (server store ของ UI + MCP) — งานของผู้ใช้ ไม่ commit
+/data/
+
+# ของเล่นจากการเทสด้วย Playwright MCP
+/.playwright-mcp/
