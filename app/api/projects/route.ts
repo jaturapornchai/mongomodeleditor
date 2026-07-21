@@ -6,8 +6,14 @@ import { listProjects, createProject, validProjectName } from "../../store";
 
 export const runtime = "nodejs";
 
-export async function GET() {
-  return Response.json(await listProjects());
+export async function GET(req: Request) {
+  const result = await listProjects();
+  // conditional: workspace rev เดิม = ไม่ต้องส่งข้อมูล (หน้าโปรเจกต์ poll ทุก 5 วิ)
+  const rawRev = new URL(req.url).searchParams.get("rev");
+  if (rawRev !== null && rawRev !== "" && Number(rawRev) === result.rev) {
+    return new Response(null, { status: 204 });
+  }
+  return Response.json(result);
 }
 
 export async function POST(req: Request) {

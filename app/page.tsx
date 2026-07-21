@@ -33,6 +33,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import ELK from "elkjs/lib/elk.bundled.js";
 import WikiViewer from "./wiki/[project]/WikiViewer";
 import type { WikiData } from "./wiki-data";
 import {
@@ -49,6 +50,7 @@ import {
   toMarkdown,
   toSampleDoc,
   toWiki,
+  isThaiText,
   demo,
 } from "./schema";
 
@@ -337,8 +339,16 @@ function FieldRow({
           </button>
         )}
         <button
-          className={`nodrag shrink-0 text-[10px] ${f.description ? "opacity-90" : "opacity-25 hover:opacity-70"}`}
-          title={f.description ? "แก้คำอธิบายฟิลด์" : "เพิ่มคำอธิบายฟิลด์"}
+          className={`nodrag shrink-0 text-[10px] ${
+            f.description && isThaiText(f.description)
+              ? "opacity-90"
+              : "text-amber-400 opacity-90 hover:opacity-100"
+          }`}
+          title={
+            f.description && isThaiText(f.description)
+              ? "แก้คำอธิบายฟิลด์"
+              : "ยังไม่มีคำอธิบายภาษาไทย — กดเพื่อเพิ่ม (บังคับ)"
+          }
           onClick={() => onEditDesc(f)}
         >
           💬
@@ -426,6 +436,7 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
     useReactFlow<CollectionNode>();
   const [editingLabel, setEditingLabel] = useState(false);
   const [editing, setEditing] = useState<EditState | null>(null);
+  const [editError, setEditError] = useState(""); // error validate คำอธิบายไทยใน popup (ว่าง/ไม่ใช่ไทย)
   const dragIndex = useRef<number | null>(null); // index ของ field ที่กำลังลาก
 
   // ชื่อคอลเลกชันทุก node — ไว้เช็คชื่อซ้ำ (equality กันร re-render ทุกครั้งที่ store ขยับ)
@@ -455,23 +466,23 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
     );
   };
 
-  const addField = () =>
-    updateNodeData(id, {
-      fields: [
-        ...data.fields,
-        { id: uid(), name: "field_" + (data.fields.length + 1), type: "String" as FieldType, required: false },
-      ],
-    });
+  const addField = () => {
+    // สร้างแล้วเปิดช่องใส่คำอธิบายทันที (บังคับภาษาไทย) — ถ้ายกเลิกจะเหลือ marker เหลืองเตือน
+    const nf: Field = {
+      id: uid(),
+      name: "field_" + (data.fields.length + 1),
+      type: "String" as FieldType,
+      required: false,
+    };
+    updateNodeData(id, { fields: [...data.fields, nf] });
+    editFieldDescription(nf);
+  };
 
-  const addChild = (parentId: string) =>
-    updateNodeData(id, {
-      fields: addChildInTree(data.fields, parentId, {
-        id: uid(),
-        name: "field",
-        type: "String" as FieldType,
-        required: false,
-      }),
-    });
+  const addChild = (parentId: string) => {
+    const nf: Field = { id: uid(), name: "field", type: "String" as FieldType, required: false };
+    updateNodeData(id, { fields: addChildInTree(data.fields, parentId, nf) });
+    editFieldDescription(nf);
+  };
 
   const duplicate = () => {
     const n = getNode(id);
@@ -487,11 +498,15 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
     updateNodeData(id, { fields: fs });
   };
 
-  // เปิด popup ป้อนรายละเอียด (แทน window.prompt)
-  const editDescription = () =>
+  // เปิด popup ป้อนรายละเอียด (แทน window.prompt) — ล้าง error เก่าทุกครั้งที่เปิด
+  const editDescription = () => {
+    setEditError("");
     setEditing({ kind: "collDesc", text: data.description ?? "" });
-  const editFieldDescription = (f: Field) =>
+  };
+  const editFieldDescription = (f: Field) => {
+    setEditError("");
     setEditing({ kind: "fieldDesc", fid: f.id, name: f.name, text: f.description ?? "" });
+  };
   const editEnumDefault = (f: Field) =>
     setEditing({
       kind: "enumDefault",
@@ -501,13 +516,21 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
       def: f.default ?? "",
     });
 
-  // บันทึกค่าจาก popup
+  // บันทึกค่าจาก popup — คำอธิบายบังคับภาษาไทย (ว่าง/ไม่ใช่ไทย = ไม่ให้บันทึก)
   const saveEditing = () => {
     if (!editing) return;
-    if (editing.kind === "collDesc") {
-      updateNodeData(id, { description: editing.text.trim() || undefined });
-    } else if (editing.kind === "fieldDesc") {
-      patchField(editing.fid, { description: editing.text.trim() || undefined });
+    if (editing.kind === "collDesc" || editing.kind === "fieldDesc") {
+      const text = editing.text.trim();
+      if (!text) {
+        setEditError("ต้องมีคำอธิบายภาษาไทยเสมอ");
+        return;
+      }
+      if (!isThaiText(text)) {
+        setEditError("คำอธิบายต้องมีอักขระภาษาไทยอย่างน้อย 1 ตัว");
+        return;
+      }
+      if (editing.kind === "collDesc") updateNodeData(id, { description: text });
+      else patchField(editing.fid, { description: text });
     } else {
       const list = editing.enumText.split(",").map((s) => s.trim()).filter(Boolean);
       patchField(editing.fid, {
@@ -573,8 +596,16 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
           </span>
         )}
         <button
-          className={`nodrag shrink-0 text-xs ${data.description ? "opacity-100" : "opacity-30 hover:opacity-70"}`}
-          title={data.description || "เพิ่มคำอธิบายคอลเลกชัน"}
+          className={`nodrag shrink-0 text-xs ${
+            data.description && isThaiText(data.description)
+              ? "opacity-100"
+              : "text-amber-400 opacity-90 hover:opacity-100"
+          }`}
+          title={
+            data.description && isThaiText(data.description)
+              ? data.description
+              : "ยังไม่มีคำอธิบายภาษาไทย — กดเพื่อเพิ่ม (บังคับ)"
+          }
           onClick={editDescription}
         >
           💬
@@ -688,17 +719,29 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
                   </div>
                 </div>
               ) : (
-                <textarea
-                  autoFocus
-                  rows={4}
-                  className="w-full resize-y rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-100 outline-none focus:border-sky-500"
-                  placeholder="พิมพ์รายละเอียดที่นี่…"
-                  value={editing.text}
-                  onChange={(e) => setEditing({ ...editing, text: e.target.value })}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) saveEditing();
-                  }}
-                />
+                <>
+                  <textarea
+                    autoFocus
+                    rows={4}
+                    className={`w-full resize-y rounded-lg border bg-slate-800 px-3 py-2 text-slate-100 outline-none focus:border-sky-500 ${
+                      editError ? "border-red-500" : "border-slate-700"
+                    }`}
+                    placeholder="พิมพ์คำอธิบายภาษาไทยที่นี่… (บังคับ)"
+                    value={editing.text}
+                    onChange={(e) => {
+                      setEditing({ ...editing, text: e.target.value });
+                      setEditError("");
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) saveEditing();
+                    }}
+                  />
+                  {editError ? (
+                    <div className="mt-2 text-xs text-red-400">⚠ {editError}</div>
+                  ) : (
+                    <div className="mt-2 text-xs text-slate-500">บังคับ: ต้องเป็นคำอธิบายภาษาไทย</div>
+                  )}
+                </>
               )}
 
               <div className="mt-4 flex justify-end gap-2">
@@ -966,7 +1009,10 @@ function Designer({
       if (!serverOn.current || knownRev.current === null) return;
       void (async () => {
         try {
-          const res = await fetch(`/api/projects/${encodeURIComponent(project)}`);
+          const res = await fetch(
+            `/api/projects/${encodeURIComponent(project)}?rev=${knownRev.current}`
+          );
+          if (res.status === 204) return; // rev เดิม — ไม่มีอะไรเปลี่ยน
           if (res.status === 404) {
             onExit(); // project ถูกลบจากที่อื่น — กลับหน้าเลือกโปรเจกต์
             return;
@@ -1246,57 +1292,78 @@ function Designer({
       },
     ]);
 
-  // จัดผังอัตโนมัติ — เรียงเป็นคอลัมน์ตามระดับการอ้างอิง (master ซ้าย → transaction ขวา),
-  // y เรียงตามความสูงจริงของ node เพื่อไม่ทับกัน
-  const autoLayout = () => {
-    // reference edge เท่านั้นใช้เป็นทิศ (embed/self-ref ไม่นับ กัน cycle)
-    const outByNode = new Map<string, string[]>();
-    edges.forEach((e) => {
-      if (e.data?.kind === "embed" || e.source === e.target) return;
-      const arr = outByNode.get(e.source) ?? [];
-      arr.push(e.target);
-      outByNode.set(e.source, arr);
+  // จัดผังอัตโนมัติ (hybrid):
+  // 1) กลุ่มที่มีเส้นเชื่อม → ELK layered (master ซ้าย → transaction ขวา, ลดเส้นตัด)
+  // 2) node เดี่ยวไม่มีเส้น → grid √n คอลัมน์ขวาสุด (ELK ล้วนกระจายเป็นหลายกม. — เคสนี้ grid ดีกว่า)
+  const autoLayout = async () => {
+    const realEdges = edges.filter((e) => e.source !== e.target);
+    const linked = new Set<string>();
+    realEdges.forEach((e) => {
+      linked.add(e.source);
+      linked.add(e.target);
     });
-    const cache = new Map<string, number>();
-    const depth = (id: string, seen: Set<string>): number => {
-      const c = cache.get(id);
-      if (c !== undefined) return c;
-      if (seen.has(id)) return 0; // กัน cycle
-      seen.add(id);
-      const outs = outByNode.get(id) ?? [];
-      const d = outs.length ? 1 + Math.max(...outs.map((t) => depth(t, seen))) : 0;
-      seen.delete(id);
-      cache.set(id, d);
-      return d;
-    };
-
-    const GAP_X = 80,
-      GAP_Y = 40,
-      X0 = 40,
-      Y0 = 40;
-    const byDepth = new Map<number, CollectionNode[]>();
-    nodes.forEach((n) => {
-      const d = depth(n.id, new Set());
-      const arr = byDepth.get(d) ?? [];
-      arr.push(n);
-      byDepth.set(d, arr);
+    const linkedNodes = nodes.filter((n) => linked.has(n.id));
+    const isolatedNodes = nodes.filter((n) => !linked.has(n.id));
+    const sizeOf = (n: CollectionNode) => ({
+      w: n.measured?.width ?? n.width ?? 288,
+      h: n.measured?.height ?? 240,
     });
 
     const pos = new Map<string, { x: number; y: number }>();
-    let x = X0;
-    [...byDepth.keys()]
-      .sort((a, b) => a - b)
-      .forEach((d) => {
-        const arr = byDepth.get(d)!;
-        let y = Y0;
-        let colW = 0;
-        arr.forEach((n) => {
-          pos.set(n.id, { x, y });
-          y += (n.measured?.height ?? 240) + GAP_Y;
-          colW = Math.max(colW, n.measured?.width ?? n.width ?? 288);
-        });
-        x += colW + GAP_X;
+    let gridX0 = 40;
+
+    if (linkedNodes.length > 0) {
+      const elk = new ELK();
+      const res = await elk.layout({
+        id: "root",
+        layoutOptions: {
+          "elk.algorithm": "layered",
+          "elk.direction": "LEFT",
+          "elk.layered.spacing.nodeNodeBetweenLayers": "90",
+          "elk.spacing.nodeNode": "45",
+          "elk.spacing.componentComponent": "90",
+        },
+        children: linkedNodes.map((n) => {
+          const s = sizeOf(n);
+          return { id: n.id, width: s.w, height: s.h };
+        }),
+        edges: realEdges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] })),
       });
+      let maxX = 0;
+      for (const c of res.children ?? []) {
+        pos.set(c.id, { x: (c.x ?? 0) + 40, y: (c.y ?? 0) + 40 });
+        maxX = Math.max(maxX, (c.x ?? 0) + (c.width ?? 0));
+      }
+      gridX0 = 40 + maxX + 120;
+    }
+
+    if (isolatedNodes.length > 0) {
+      // แบ่งคอลัมน์ตาม √n แล้วเกาะกระจายด้วย bin-packing (ใส่คอลัมน์ที่เตี๋ยสุดทีละกล่อง — สมดุลแม้ node สูงต่างกัน)
+      const gridCols = Math.ceil(Math.sqrt(isolatedNodes.length));
+      const bins: { nodes: CollectionNode[]; h: number }[] = Array.from(
+        { length: gridCols },
+        () => ({ nodes: [], h: 0 })
+      );
+      for (const n of isolatedNodes) {
+        const s = sizeOf(n);
+        const shortest = bins.reduce((a, b) => (b.h < a.h ? b : a));
+        shortest.nodes.push(n);
+        shortest.h += s.h + 40;
+      }
+      let x = gridX0;
+      for (const bin of bins) {
+        if (!bin.nodes.length) continue;
+        let y = 40;
+        let w = 0;
+        for (const n of bin.nodes) {
+          const s = sizeOf(n);
+          pos.set(n.id, { x, y });
+          y += s.h + 40;
+          w = Math.max(w, s.w);
+        }
+        x += w + 80;
+      }
+    }
 
     setNodes((ns) => ns.map((n) => ({ ...n, position: pos.get(n.id) ?? n.position })));
     setTimeout(() => fitView({ padding: 0.15, duration: 400 }), 60);
@@ -1448,7 +1515,7 @@ function Designer({
           <button
             className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
             title="จัดเรียง node อัตโนมัติ ไม่ให้ทับกัน"
-            onClick={autoLayout}
+            onClick={() => void autoLayout()}
           >
             ▦ จัดผัง
           </button>
@@ -1710,12 +1777,16 @@ function ProjectHome({
   const [renameText, setRenameText] = useState("");
   const [error, setError] = useState("");
   const importInput = useRef<HTMLInputElement>(null);
+  const lastWsRev = useRef(0); // workspace rev ล่าสุด — ส่ง ?rev= ตอน poll (204 = ไม่ต้องทำอะไร)
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/projects");
+      const res = await fetch(`/api/projects?rev=${lastWsRev.current}`);
+      if (res.status === 204) return; // workspace rev เดิม — ไม่มีอะไรเปลี่ยน
       if (!res.ok) throw new Error();
-      let projects = ((await res.json()).projects ?? []) as ProjectSummary[];
+      const json = await res.json();
+      if (typeof json.rev === "number") lastWsRev.current = json.rev;
+      let projects = (json.projects ?? []) as ProjectSummary[];
       // migrate ครั้งแรก — server ว่าง + localStorage เคยมีงาน + ยังไม่เคย sync → ยกขึ้นเป็น project "default"
       if (
         projects.length === 0 &&
@@ -1981,13 +2052,19 @@ function WikiOverlay({
 }) {
   const [data, setData] = useState<WikiData | null>(null);
   const [error, setError] = useState(false);
+  const revRef = useRef(""); // rev ของ WikiData รอบล่าสุด — ส่ง ?rev= ตอน poll (204 = ไม่เปลี่ยน)
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const res = await fetch(`/api/wiki/${encodeURIComponent(project)}`);
+        const res = await fetch(
+          `/api/wiki/${encodeURIComponent(project)}?rev=${revRef.current}`
+        );
+        if (res.status === 204) return; // rev เดิม — ไม่มีอะไรเปลี่ยน
         if (!res.ok) throw new Error();
-        if (alive) setData((await res.json()) as WikiData);
+        const j = (await res.json()) as WikiData;
+        revRef.current = String(j.rev);
+        if (alive) setData(j);
       } catch {
         if (alive) setError(true);
       }

@@ -23,7 +23,10 @@ const LEGACY_FILE = path.join(DATA_DIR, "project.json"); // รูปแบบ�
 const EMPTY: Workspace = { rev: 0, projects: {} };
 
 // คิวเขียนบน globalThis — dev hot-reload อาจสร้าง module instance ซ้ำ กันเขียนไฟล์ชนกันข้าม instance
-const g = globalThis as { __mongomodelQueue?: Promise<unknown> };
+const g = globalThis as {
+  __mongomodelQueue?: Promise<unknown>;
+  __mongomodelWsCache?: { data: Workspace; mtimeMs: number; size: number };
+};
 const enqueue = <T>(job: () => Promise<T>): Promise<T> => {
   const prev = g.__mongomodelQueue ?? Promise.resolve();
   const next = prev.then(job, job);
@@ -42,6 +45,13 @@ async function writeFile(data: Workspace): Promise<void> {
   const tmp = `${FILE}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
   await fs.rename(tmp, FILE);
+  // อัปเดต cache ด้วย snapshot ที่เพิ่งเขียน + stat ใหม่ — กัน mtime resolution หยาบบน Docker bind mount
+  try {
+    const st = await fs.stat(FILE);
+    g.__mongomodelWsCache = { data: structuredClone(data), mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    delete g.__mongomodelWsCache;
+  }
 }
 
 /** migrate ไฟล์รูปแบบเก่า (data/project.json, project เดียว) เข้า workspace เป็น project "default" */
@@ -70,18 +80,32 @@ async function migrateLegacy(): Promise<Workspace | null> {
   }
 }
 
-/** อ่าน workspace จากไฟล์เสมอ — ไม่ cache กัน instance คนละตัว (UI route vs MCP route) เห็นข้อมูลเก่า */
+/**
+ * อ่าน workspace — cache ตาม mtime+size (fs.stat ทุกครั้งถูกมาก แต่ parse เฉพาะเมื่อไฟล์เปลี่ยน)
+ * คืน structuredClone เสมอ — caller (tools/save) mutate ได้โดยไม่ทำ cache สกปรก
+ * ไฟล์ไม่มี/migrate → bypass cache (ห้าม cache EMPTY ค้าง)
+ */
 export async function getWorkspace(): Promise<Workspace> {
   try {
+    const st = await fs.stat(FILE);
+    const c = g.__mongomodelWsCache;
+    if (c && c.mtimeMs === st.mtimeMs && c.size === st.size) {
+      return structuredClone(c.data);
+    }
     const raw = await fs.readFile(FILE, "utf8");
     const ws = JSON.parse(raw) as Partial<Workspace>;
     if (typeof ws.projects === "object" && ws.projects !== null) {
-      return { rev: typeof ws.rev === "number" ? ws.rev : 0, projects: ws.projects };
+      const data: Workspace = {
+        rev: typeof ws.rev === "number" ? ws.rev : 0,
+        projects: ws.projects,
+      };
+      g.__mongomodelWsCache = { data: structuredClone(data), mtimeMs: st.mtimeMs, size: st.size };
+      return data; // เพิ่ง parse เอง — cache เก็บ clone แยก caller แตะไม่ถึง
     }
   } catch {
-    // ไฟล์ยังไม่มี / อ่านไม่ได้ → ลอง migrate ของเก่า
+    // ไฟล์ยังไม่มี / อ่านไม่ได้ → ลอง migrate ของเก่า (bypass cache)
   }
-  return (await migrateLegacy()) ?? EMPTY;
+  return (await migrateLegacy()) ?? structuredClone(EMPTY);
 }
 
 export async function getProject(name: string): Promise<StoredProject | null> {

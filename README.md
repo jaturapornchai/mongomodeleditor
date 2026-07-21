@@ -32,6 +32,7 @@
 - 9 ชนิด: `String` `Number` `Boolean` `Date` `ObjectId` `Array` `Object` `Decimal128` `Mixed`
 - `_id` เป็น Primary Key (🔑) อัตโนมัติ
 - ตั้ง **required** (`*`), **unique index** (`U`), **enum** + **ค่าเริ่มต้น (default)** ผ่าน popup
+- **คำอธิบายบังคับภาษาไทย** — popup คำอธิบาย (💬) validate ต้องมีอักขระไทย; จุดที่ยังขาดจะเป็น 💬 สีเหลืองเตือน (ทั้งฟิลด์และหัวคอลเลกชัน); กดเพิ่มฟิลด์แล้วเปิดช่องใส่คำอธิบายให้ทันที
 - **Array มีชนิดสมาชิก** (`Array<String>`, `Array<Object>` ฯลฯ)
 - ใส่คำอธิบายต่อฟิลด์ (แสดง inline)
 - **จัดลำดับฟิลด์ด้วยการลากปล่อย** (จับที่ ⠿)
@@ -102,12 +103,14 @@
 | กลุ่ม | Tools |
 |---|---|
 | project | `list_projects` · `create_project` · `rename_project` · `delete_project` |
-| อ่าน | `list_diagrams` · `get_diagram` |
+| อ่าน | `list_diagrams` · `get_diagram` · `check_descriptions` (รายงานตัวที่ยังไม่มีคำอธิบายไทย) |
 | diagram | `create_diagram` · `rename_diagram` · `delete_diagram` · `switch_diagram` |
 | collection | `add_collection` · `update_collection` · `delete_collection` |
 | field | `add_field` · `update_field` · `delete_field` (รองรับ nested ด้วย `parent`/`children` และ dotted path เช่น `address.geo.lat`) |
 | relation | `add_relation` (reference/embed × cardinality) · `delete_relation` |
 | codegen | `generate_code` — mongosh / mongoose / typescript / markdown / sample / json / **wiki** (wikillm) |
+
+**บังคับคำอธิบายภาษาไทยเสมอ** — ทุก collection/field ที่สร้างหรือแก้ผ่าน MCP ต้องมี `description` ภาษาไทย (เช็กอักขระไทยจริง) ไม่มี/เป็นอังกฤษ = error พร้อมบอกจุด · เรียก `check_descriptions` เพื่อดูของเก่าที่ยังขาดแล้วเติมให้ครบ · ฝั่ง UI ก็บังคับเหมือนกัน: popup คำอธิบาย validate ไทย + จุดที่ขาดมี 💬 สีเหลืองเตือน
 
 - AI แก้ปุ๊บเขียนลง `data/projects.json` ทันที — **UI ที่เปิดอยู่ auto refresh ให้เอง**ภายใน 3 วิ พร้อม toast แจ้ง
 - ไม่มี auth — ใช้ในเครื่องเท่านั้น (เหมือน dev server ทั่วไป)

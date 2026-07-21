@@ -68,6 +68,37 @@ const err = (message: string) => ({
   isError: true,
 });
 
+// ---------- กฎคำอธิบายภาษาไทย (บังคับทุก collection/field ที่สร้างผ่าน MCP) ----------
+
+/** มีอักขระไทยอย่างน้อย 1 ตัว (ช่วง Unicode ภาษาไทย) */
+const THAI_RE = /[\u0E00-\u0E7F]/;
+const isThai = (s: string) => THAI_RE.test(s);
+
+/** มีคำอธิบายภาษาไทยครบไหม */
+const hasThaiDesc = (d: string | undefined): boolean =>
+  d !== undefined && d.trim() !== "" && isThai(d);
+
+/** description ต้องมีและเป็นภาษาไทย — คืนข้อความ error หรือ null ถ้าผ่าน */
+function thaiDescError(what: string, desc: string | undefined): string | null {
+  if (desc === undefined || desc.trim() === "") return `${what} ต้องมี description (คำอธิบาย)`;
+  if (!isThai(desc)) return `${what} description ต้องเป็นภาษาไทย (อย่างน้อยมีอักขระไทย) — ได้รับ: "${desc}"`;
+  return null;
+}
+
+/** ตรวจทุก field (recursive ลง children) ว่ามีคำอธิบายไทยครบ */
+function fieldsThaiError(fields: FieldInput[], path = ""): string | null {
+  for (const f of fields) {
+    const p = path ? `${path}.${f.name}` : f.name;
+    const e = thaiDescError(`field "${p}"`, f.description);
+    if (e) return e;
+    if (f.children) {
+      const ce = fieldsThaiError(f.children, p);
+      if (ce) return ce;
+    }
+  }
+  return null;
+}
+
 /** โหลด project หรือคืนข้อความ error พร้อมรายชื่อที่มี */
 async function requireProject(name: string): Promise<StoredProject | { error: string }> {
   const p = await getProject(name);
@@ -134,7 +165,7 @@ type FieldInput = {
   name: string;
   type: FieldType;
   required?: boolean;
-  description?: string;
+  description: string; // บังคับ — ต้องเป็นภาษาไทย (ตรวจด้วย fieldsThaiError)
   of?: FieldType;
   enum?: string[];
   default?: string;
@@ -147,7 +178,7 @@ const toField = (input: FieldInput): Field => ({
   name: input.name,
   type: input.type,
   required: input.required ?? false,
-  ...(input.description !== undefined && { description: input.description }),
+  description: input.description,
   ...(input.of !== undefined && { of: input.of }),
   ...(input.enum !== undefined && { enum: input.enum }),
   ...(input.default !== undefined && { default: input.default }),
@@ -181,7 +212,7 @@ const fieldInputSchema = z.object({
   name: z.string().min(1).describe("ชื่อฟิลด์"),
   type: z.enum(FIELD_TYPES).describe("ชนิดข้อมูล"),
   required: z.boolean().optional(),
-  description: z.string().optional(),
+  description: z.string().min(1).describe("คำอธิบายฟิลด์ (บังคับ — ต้องเป็นภาษาไทย)"),
   of: z.enum(FIELD_TYPES).optional().describe("ชนิดสมาชิก (เฉพาะ type=Array)"),
   enum: z.array(z.string()).optional().describe("ค่าที่อนุญาต"),
   default: z.string().optional().describe("ค่าเริ่มต้น (string เสมอ)"),
@@ -292,6 +323,40 @@ function createServer(): McpServer {
     }
   );
 
+  server.registerTool(
+    "check_descriptions",
+    {
+      description:
+        "ตรวจว่า collection/field ไหนยังไม่มีคำอธิบายภาษาไทย — คืนรายการ path ที่ต้องไปเติม (ว่าง = ครบแล้ว) ใช้ก่อน generate_code เพื่อให้เอกสารออกมามีคำอธิบายไทยครบ",
+      inputSchema: { project: projectParam, diagram: diagramParam },
+    },
+    async ({ project, diagram }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const hit = findDiagram(p, diagram);
+      if ("error" in hit) return err(hit.error);
+      const missing: string[] = [];
+      const walk = (collLabel: string, fields: Field[], path: string) => {
+        for (const f of fields) {
+          const fp = path ? `${path}.${f.name}` : f.name;
+          if (!hasThaiDesc(f.description)) missing.push(`${collLabel}.${fp}`);
+          if (f.children) walk(collLabel, f.children, fp);
+        }
+      };
+      for (const n of hit.d.nodes as N[]) {
+        if (!hasThaiDesc(n.data.description)) missing.push(n.data.label);
+        walk(n.data.label, n.data.fields, "");
+      }
+      return missing.length === 0
+        ? ok("✓ ครบ — ทุก collection/field มีคำอธิบายภาษาไทยแล้ว")
+        : ok({
+            count: missing.length,
+            missing,
+            hint: "เติมด้วย update_collection / update_field พร้อม description ภาษาไทย",
+          });
+    }
+  );
+
   // ----- จัดการ diagram -----
 
   server.registerTool(
@@ -377,15 +442,21 @@ function createServer(): McpServer {
     "add_collection",
     {
       description:
-        "เพิ่ม collection ใหม่ — ถ้าไม่ส่ง fields จะใส่ _id: ObjectId (PK) ให้อัตโนมัติเหมือน UI",
+        "เพิ่ม collection ใหม่ — description บังคับต้องเป็นภาษาไทย (ทั้ง collection และทุก field ถ้าส่ง fields) · ถ้าไม่ส่ง fields จะใส่ _id: ObjectId (PK) พร้อมคำอธิบายไทยให้อัตโนมัติ",
       inputSchema: {
         project: projectParam,
         diagram: diagramParam,
         label: z.string().min(1).describe("ชื่อ collection"),
-        description: z.string().optional(),
+        description: z
+          .string()
+          .min(1)
+          .describe("คำอธิบาย collection (บังคับ — ต้องเป็นภาษาไทย)"),
         x: z.number().optional().describe("ตำแหน่งบน canvas (default ไล่ลงขวา)"),
         y: z.number().optional(),
-        fields: z.array(fieldInputSchema).optional().describe("ฟิลด์เริ่มต้น (รองรับ children ซ้อน)"),
+        fields: z
+          .array(fieldInputSchema)
+          .optional()
+          .describe("ฟิลด์เริ่มต้น — ทุก field ต้องมี description ภาษาไทย (รวม children)"),
       },
     },
     async ({ project, diagram, label, description, x, y, fields }) => {
@@ -393,6 +464,13 @@ function createServer(): McpServer {
       if ("error" in p) return err(p.error);
       const hit = findDiagram(p, diagram);
       if ("error" in hit) return err(hit.error);
+      // บังคับคำอธิบายไทย — collection และทุก field (recursive)
+      const collErr = thaiDescError(`collection "${label}"`, description);
+      if (collErr) return err(collErr);
+      if (fields) {
+        const fErr = fieldsThaiError(fields);
+        if (fErr) return err(fErr);
+      }
       const nodes = hit.d.nodes as N[];
       const count = nodes.length;
       const node: N = {
@@ -401,10 +479,18 @@ function createServer(): McpServer {
         position: { x: x ?? 120 + count * 40, y: y ?? 120 + count * 40 },
         data: {
           label,
-          ...(description !== undefined && { description }),
+          description,
           fields:
             fields?.map(toField) ??
-            [{ id: uid(), name: "_id", type: "ObjectId", required: true }],
+            [
+              {
+                id: uid(),
+                name: "_id",
+                type: "ObjectId",
+                required: true,
+                description: "รหัส ObjectID ของเอกสาร",
+              },
+            ],
         },
       };
       nodes.push(node);
@@ -416,13 +502,13 @@ function createServer(): McpServer {
   server.registerTool(
     "update_collection",
     {
-      description: "แก้ชื่อ / คำอธิบาย collection",
+      description: "แก้ชื่อ / คำอธิบาย collection — หลังแก้ collection ต้องมีคำอธิบายภาษาไทยเสมอ",
       inputSchema: {
         project: projectParam,
         diagram: diagramParam,
         collection: collectionParam,
         label: z.string().min(1).optional(),
-        description: z.string().optional().describe("ส่งสตริงว่างเพื่อลบคำอธิบาย"),
+        description: z.string().optional().describe("ต้องเป็นภาษาไทย (ลบคำอธิบายเดิมไม่ได้)"),
       },
     },
     async ({ project, diagram, collection, label, description }) => {
@@ -432,11 +518,13 @@ function createServer(): McpServer {
       if ("error" in hit) return err(hit.error);
       const node = findNode(hit.d, collection);
       if ("error" in node) return err(node.error);
-      if (label !== undefined) node.data.label = label;
-      if (description !== undefined) {
-        if (description === "") delete node.data.description;
-        else node.data.description = description;
-      }
+      const newLabel = label ?? node.data.label;
+      const newDesc = description !== undefined && description !== "" ? description : node.data.description;
+      // หลังแก้ต้องเหลือคำอธิบายไทยเสมอ — ถ้ายังไม่มีให้ส่ง description ภาษาไทยมาด้วย
+      const dErr = thaiDescError(`collection "${newLabel}"`, newDesc);
+      if (dErr) return err(dErr);
+      node.data.label = newLabel;
+      node.data.description = newDesc;
       await save(project, p);
       return ok({ id: node.id, label: node.data.label });
     }
@@ -470,7 +558,7 @@ function createServer(): McpServer {
     "add_field",
     {
       description:
-        "เพิ่มฟิลด์ใน collection — ซ้อนได้ด้วย parent (dotted path ไปยัง Object/Array<Object>) หรือ children",
+        "เพิ่มฟิลด์ใน collection — description บังคับต้องเป็นภาษาไทย (รวม children) · ซ้อนได้ด้วย parent (dotted path ไปยัง Object/Array<Object>)",
       inputSchema: {
         project: projectParam,
         diagram: diagramParam,
@@ -482,7 +570,7 @@ function createServer(): McpServer {
         name: z.string().min(1),
         type: z.enum(FIELD_TYPES),
         required: z.boolean().optional(),
-        description: z.string().optional(),
+        description: z.string().min(1).describe("คำอธิบายฟิลด์ (บังคับ — ต้องเป็นภาษาไทย)"),
         of: z.enum(FIELD_TYPES).optional(),
         enum: z.array(z.string()).optional(),
         default: z.string().optional(),
@@ -497,6 +585,9 @@ function createServer(): McpServer {
       if ("error" in hit) return err(hit.error);
       const node = findNode(hit.d, collection);
       if ("error" in node) return err(node.error);
+      // บังคับคำอธิบายไทย — ฟิลด์นี้และ children ทั้งหมด
+      const fErr = fieldsThaiError([input as FieldInput]);
+      if (fErr) return err(fErr);
       let container = node.data.fields;
       if (parent !== undefined) {
         const ph = findField(container, parent);
@@ -514,7 +605,8 @@ function createServer(): McpServer {
   server.registerTool(
     "update_field",
     {
-      description: "แก้คุณสมบัติฟิลด์ (ส่งเฉพาะที่จะแก้) — อ้าง field ด้วย id หรือ dotted path ของชื่อ",
+      description:
+        "แก้คุณสมบัติฟิลด์ (ส่งเฉพาะที่จะแก้) — หลังแก้ฟิลด์ต้องมีคำอธิบายภาษาไทยเสมอ · อ้าง field ด้วย id หรือ dotted path ของชื่อ",
       inputSchema: {
         project: projectParam,
         diagram: diagramParam,
@@ -523,12 +615,12 @@ function createServer(): McpServer {
         name: z.string().min(1).optional(),
         type: z.enum(FIELD_TYPES).optional(),
         required: z.boolean().optional(),
-        description: z.string().optional().describe("ส่งสตริงว่างเพื่อลบ"),
+        description: z.string().optional().describe("ต้องเป็นภาษาไทย (ลบคำอธิบายเดิมไม่ได้)"),
         of: z.enum(FIELD_TYPES).optional(),
         enum: z.array(z.string()).optional().describe("ส่ง [] เพื่อลบ enum"),
         default: z.string().optional().describe("ส่งสตริงว่างเพื่อลบค่าเริ่มต้น"),
         unique: z.boolean().optional(),
-        children: z.array(fieldInputSchema).optional().describe("แทนที่ฟิลด์ย่อยทั้งชุด"),
+        children: z.array(fieldInputSchema).optional().describe("แทนที่ฟิลด์ย่อยทั้งชุด (ต้องมีคำอธิบายไทยครบ)"),
       },
     },
     async ({ project, diagram, collection, field: ref, children, ...patch }) => {
@@ -541,13 +633,21 @@ function createServer(): McpServer {
       const fh = findField(node.data.fields, ref);
       if ("error" in fh) return err(fh.error);
       const f = fh.field;
+      // หลังแก้ต้องเหลือคำอธิบายไทยเสมอ — ถ้ายังไม่มีให้ส่ง description ภาษาไทยมาด้วย
+      const newDesc =
+        patch.description !== undefined && patch.description !== ""
+          ? patch.description
+          : f.description;
+      const dErr = thaiDescError(`field "${patch.name ?? f.name}"`, newDesc);
+      if (dErr) return err(dErr);
+      if (children !== undefined) {
+        const cErr = fieldsThaiError(children);
+        if (cErr) return err(cErr);
+      }
       if (patch.name !== undefined) f.name = patch.name;
       if (patch.type !== undefined) f.type = patch.type;
       if (patch.required !== undefined) f.required = patch.required;
-      if (patch.description !== undefined) {
-        if (patch.description === "") delete f.description;
-        else f.description = patch.description;
-      }
+      f.description = newDesc;
       if (patch.of !== undefined) f.of = patch.of;
       if (patch.enum !== undefined) {
         if (patch.enum.length === 0) delete f.enum;
@@ -736,16 +836,35 @@ function createServer(): McpServer {
   return server;
 }
 
-// ---------- route handler (stateless: server + transport ใหม่ทุก request) ----------
+// ---------- route handler (stateless เหมือนเดิม + server pool) ----------
+// วัดจริง createServer ~1.1ms/call (1000 ครั้ง) — pool ลดต้นทุนสร้าง server ซ้ำทุก request
+// ข้อจำกัด SDK 1.29: Protocol.connect() ไม่ยอม connect ซ้ำหลัง close เพราะไม่ล้าง this._transport
+// → ต้องล้างเอง (ผูกกับเวอร์ชัน SDK ที่ lockfile pin ไว้ — อัปเกรด SDK ให้ตรวจจุดนี้ใหม่)
+const POOL_SIZE = 8;
+const serverPool: McpServer[] = [];
+const checkout = (): McpServer => serverPool.pop() ?? createServer();
+const checkin = async (server: McpServer): Promise<void> => {
+  try {
+    await server.close(); // ปิด transport ของ request นี้
+  } catch {
+    // ปิดซ้ำ/ปิดตอนยังไม่ connect ได้ ไม่เป็นไร
+  }
+  (server as unknown as { _transport?: unknown })._transport = undefined;
+  if (serverPool.length < POOL_SIZE) serverPool.push(server);
+};
 
 async function handle(req: Request): Promise<Response> {
-  const server = createServer();
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined, // stateless — ไม่ต้องจัดการ session
-    enableJsonResponse: true, // ตอบเป็น JSON เลย ไม่ต้องเปิด SSE stream
-  });
-  await server.connect(transport);
-  return transport.handleRequest(req);
+  const server = checkout(); // sync — 2 request ขนานได้คนละ instance แน่นอน (ไม่ cross-talk)
+  try {
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // stateless — ไม่ต้องจัดการ session
+      enableJsonResponse: true, // ตอบเป็น JSON เลย ไม่ต้องเปิด SSE stream
+    });
+    await server.connect(transport);
+    return await transport.handleRequest(req);
+  } finally {
+    await checkin(server);
+  }
 }
 
 export const POST = handle;

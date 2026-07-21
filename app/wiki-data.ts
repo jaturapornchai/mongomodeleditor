@@ -28,12 +28,16 @@ export type WikiGraphEdge = {
 };
 export type WikiData = {
   project: string;
+  rev: number; // rev ของ project ตอนสร้างข้อมูลชุดนี้ — ใช้ทำ conditional GET (?rev=)
   files: Record<string, string>;
   gNodes: WikiGraphNode[];
   gEdges: WikiGraphEdge[];
 };
 
 type NodeLike = { id: string; data: CollectionData };
+
+// cache ตาม project.rev — rev ไม่เปลี่ยน = ข้อมูลชุดเดิม (overlay poll ทุก 3 วิ ไม่ต้อง regen)
+const g = globalThis as { __mongomodelWikiCache?: Map<string, { rev: number; data: WikiData }> };
 type EdgeLike = {
   id?: string;
   source: string;
@@ -70,10 +74,13 @@ function collectTypes(
   }
 }
 
-/** โหลด project แล้วเตรียมข้อมูล wiki ทั้งชุด — null = ไม่พบ project */
+/** โหลด project แล้วเตรียมข้อมูล wiki ทั้งชุด — null = ไม่พบ project (ไม่ cache กรณีนี้) */
 export async function getWikiData(project: string): Promise<WikiData | null> {
   const p = await getProject(project);
   if (!p) return null;
+  const cache = (g.__mongomodelWikiCache ??= new Map());
+  const hit = cache.get(project);
+  if (hit && hit.rev === p.rev) return hit.data;
 
   // รวมทุก diagram ใน project — dedupe collection ตาม label (first-wins)
   const nodes: GenNode[] = [];
@@ -121,5 +128,7 @@ export async function getWikiData(project: string): Promise<WikiData | null> {
     });
   }
 
-  return { project, files, gNodes, gEdges };
+  const data: WikiData = { project, rev: p.rev, files, gNodes, gEdges };
+  cache.set(project, { rev: p.rev, data });
+  return data;
 }

@@ -108,6 +108,9 @@ const SAMPLE_VALUES: Record<FieldType, unknown> = {
 
 const IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
+/** มีอักขระภาษาไทยอย่างน้อย 1 ตัว (ใช้บังคับ "คำอธิบายภาษาไทยเสมอ" ทั้ง UI และ MCP) */
+export const isThaiText = (s: string): boolean => /[\u0E00-\u0E7F]/.test(s);
+
 /** ชื่อฟิลด์ที่ไม่ใช่ identifier (ช่องว่าง/ไทย/ขึ้นต้นตัวเลข) ต้อง quote */
 function quoteKey(name: string): string {
   return IDENT_RE.test(name) ? name : JSON.stringify(name);
