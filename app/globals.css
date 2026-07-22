@@ -48,3 +48,9 @@ body {
 .wiki-note-enter {
   animation: wiki-fade-in 0.25s ease-out;
 }
+
+/* virtual node ของเป้าหมายเส้นข้าม tab — เส้นประ + จาง แยกจาก node จริง */
+.cross-tab-node > div {
+  border-style: dashed !important;
+  opacity: 0.85;
+}

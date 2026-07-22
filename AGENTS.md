@@ -6,11 +6,12 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 # MCP server (AI ภายนอกอ่าน/แก้ diagram)
 
-- MCP endpoint = `app/mcp/route.ts` (Streamable HTTP, stateless, `POST` เท่านั้น) — AI เชื่อมที่ `http://localhost:3100/mcp`
+- MCP มี 2 transport แชร์ tools ชุดเดียวกัน (นิยามทั้งหมดใน `app/mcp/server.ts`): HTTP = `app/mcp/route.ts` (Streamable HTTP, stateless, `POST` เท่านั้น) AI เชื่อมที่ `http://localhost:3100/mcp` · stdio = `mcp-stdio.ts` ที่ root (`npm run mcp:stdio` — client spawn เอง ไม่ต้องรันเว็บ; script **chdir กลับ root ก่อน dynamic import** เสมอ เพราะ store หา `data/` จาก cwd ตอน import)
 - **หลาย project**: source of truth = `data/projects.json` ผ่าน `app/store.ts` (atomic write + `rev` ต่อ project) — **ทุก MCP tool ต้องส่ง `project` (ชื่อ) เสมอ**; UI โหลด/เซฟผ่าน `app/api/projects/*` และ poll `rev` ทุก 3 วิเพื่อ **auto refresh** เมื่อ AI แก้; `localStorage` เป็นแค่ offline cache
-- เพิ่ม tool ใหม่: `server.registerTool` ใน `createServer()` ของ `app/mcp/route.ts` — mutation ทุกตัวต้องจบด้วย `save(project, p)` เพื่อ auto save + เพิ่ม rev (ถ้าลืม UI จะไม่ refresh)
+- เพิ่ม tool ใหม่: `server.registerTool` ใน `createServer()` ของ `app/mcp/server.ts` — mutation ทุกตัวต้องจบด้วย `save(project, p)` เพื่อ auto save + เพิ่ม rev (ถ้าลืม UI จะไม่ refresh)
 - **กฎคำอธิบายภาษาไทยเสมอ**: `add_collection`/`add_field` บังคับ `description` ไทย (zod required + `fieldsThaiError` เช็กอักขระไทย U+0E00–U+0E7F recursive ลง children); `update_collection`/`update_field` บังคับว่าหลังแก้ต้องเหลือคำอธิบายไทย; tool `check_descriptions` รายงานตัวที่ยังขาด; ฝั่ง UI บังคับใน `saveEditing` (`page.tsx`) ด้วย `isThaiText` จาก `schema.ts` + 💬 เหลืองเตือนจุดที่ขาด — ถ้าแก้ schema ของ field input อย่าลืมอัปเดต validation เส้นนี้ด้วย
 - **error มี machine code** นำหน้าข้อความไทย เช่น `[PROJECT_NOT_FOUND]` `[DIAGRAM_NOT_FOUND]` `[COLLECTION_NOT_FOUND]` `[FIELD_NOT_FOUND]` `[DESCRIPTION_NOT_THAI]` `[DUPLICATE_LABEL]` — ใส่ code กับ error ใหม่ทุกจุดเสมอ
+- **ห้าม recursive zod schema** ใน MCP tools (getter วนตัวเอง) — JSON Schema ที่ออกจะมี `$ref` ชี้ path ตรง ซึ่ง client บางตัวปฏิเสธทั้งชุด tools (Moonshot บังคับ `#/$defs/`, OpenAI strict ไม่รับ `$ref` เลย) → `fieldInputSchema` ใช้ children ลึกจำกัด 4 ชั้นแบบ inline (ลึกกว่านั้นใช้ add_field + parent เติมทีละชั้น); ถ้าเพิ่ม tool ใหม่ที่มีโครงซ้อน ให้ทำแบบเดียวกัน
 - `add_collection` ปฏิเสธ label ซ้ำใน diagram เดียวกัน (เว้นแต่ `replace: true` = แทนที่ ลบเส้นเก่าด้วย); bulk import ทั้งผังใช้ `replace_diagram` (validate ก่อนทั้งหมดแล้วเขียน atomic rev +1 ครั้งเดียว)
 
 # Performance (cache/pool — ห้ามแก้โดยไม่เข้าใจ)

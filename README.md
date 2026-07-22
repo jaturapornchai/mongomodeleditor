@@ -80,13 +80,16 @@
 
 ### 🤖 MCP Server (ให้ AI ตัวอื่นเข้ามาทำงาน)
 
-แอปมี MCP server ในตัวที่ **`http://localhost:3100/mcp`** (Streamable HTTP) — AI อื่น (Claude Desktop, Cursor, Kimi CLI ฯลฯ) เชื่อมเข้ามา **อ่าน / เพิ่ม / ลบ / แก้ไข** diagram ได้ครบทุกอย่าง และสั่งสร้างโค้ดได้ทุกรูปแบบ
+แอปมี MCP server ในตัว 2 transport (tools ชุดเดียวกัน นิยามใน `app/mcp/server.ts`) — AI อื่น (Claude Desktop, Cursor, Kimi CLI ฯลฯ) เชื่อมเข้ามา **อ่าน / เพิ่ม / ลบ / แก้ไข** diagram ได้ครบทุกอย่าง และสั่งสร้างโค้ดได้ทุกรูปแบบ
+
+- **Streamable HTTP** — `http://localhost:3100/mcp` (ติดมากับเว็บแอป ต้องรัน dev/Docker ก่อน)
+- **stdio** — client spawn process เองผ่าน `mcp-stdio.ts` (ไม่ต้องรันเว็บแอป; แตะ `data/projects.json` ก้อนเดียวกัน)
 
 ข้อมูลทั้งหมดเก็บที่ **`data/projects.json`** เป็น source of truth กลาง — **auto save ทุกการเปลี่ยนแปลง** ทั้งจาก UI (หน่วง 400ms) และจาก AI (ทันที) ส่วน `localStorage` ยังทำหน้าที่เป็น offline cache เผื่อ server ไม่ได้รัน
 
 **ทุก tool ต้องระบุ `project` (ชื่อโปรเจกต์) เสมอ** — AI หลายตัว/หลายโปรเจกต์ทำงานพร้อมกันได้ โดยไม่ชนกัน
 
-**ตั้งค่า client** (Claude Desktop / Cursor / Kimi CLI):
+**ตั้งค่า client** (Claude Desktop / Cursor / Kimi CLI) — แบบ HTTP:
 
 ```json
 {
@@ -96,7 +99,20 @@
 }
 ```
 
-> client ที่รองรับเฉพาะ stdio ใช้ [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) เป็นสะพาน: `"command": "npx", "args": ["-y", "mcp-remote", "http://localhost:3100/mcp"]`
+แบบ **stdio** (client spawn process เอง — แก้ path ให้ตรงโฟลเดอร์โปรเจกต์; ต้อง `npm install` ไว้ก่อนเพราะใช้ `tsx` ของโปรเจกต์):
+
+```json
+{
+  "mcpServers": {
+    "mongomodel": {
+      "command": "npm",
+      "args": ["run", "--silent", "--prefix", "D:/mongomodel", "mcp:stdio"]
+    }
+  }
+}
+```
+
+> ผ่าน `npm run` ต้องมี `--silent` เสมอ ไม่งั้น banner ของ npm ปนเข้าช่อง JSON-RPC · ใช้ `"command": "npx", "args": ["tsx", "D:/mongomodel/mcp-stdio.ts"]` ก็ได้ (script จะ chdir กลับมาที่โปรเจกต์เอง ไม่ขึ้นกับ cwd ของ client) · หรือจะใช้ [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) เป็นสะพานไป HTTP ก็ยังได้: `"command": "npx", "args": ["-y", "mcp-remote", "http://localhost:3100/mcp"]`
 
 **Tools ทั้งหมด:**
 
@@ -183,13 +199,14 @@ mongomodeleditor/
 │   ├── wiki/[project]/ # หน้า wiki viewer แบบ Obsidian (explorer, note, กราฟ, backlinks, Ctrl+K)
 │   ├── api/projects/   # REST CRUD โปรเจกต์ให้ UI (GET/POST/PATCH/PUT/DELETE)
 │   ├── api/wiki/       # REST ข้อมูล wiki viewer (JSON)
-│   ├── mcp/            # MCP server (Streamable HTTP) สำหรับ AI ภายนอก
+│   ├── mcp/            # MCP server สำหรับ AI ภายนอก (server.ts = tools กลาง, route.ts = HTTP)
 │   ├── layout.tsx      # root layout + ฟอนต์ไทย (Noto Sans Thai)
 │   ├── globals.css     # ธีม + tweak React Flow
 │   └── error.tsx       # error boundary กันจอขาว
 ├── data/projects.json  # ข้อมูลทุกโปรเจกต์ (สร้างอัตโนมัติ, git-ignored, mount เข้า container)
 ├── Dockerfile          # production image (Next.js standalone, multi-stage)
 ├── docker-compose.yml  # รันค้างใน Docker Desktop (พอร์ต 3100, mount ./data)
+├── mcp-stdio.ts      # MCP transport แบบ stdio (client spawn เอง — npm run mcp:stdio)
 ├── erp-example.json    # ตัวอย่างโปรเจกต์ ERP 5 โมดูล (นำเข้าจากหน้าเลือกโปรเจกต์)
 ├── docs/preview.png    # ภาพตัวอย่าง
 └── package.json
@@ -327,7 +344,7 @@ mongomodeleditor/
 | เตรียมข้อมูล wiki (merge + กราฟ) | `wiki-data.ts` → `getWikiData()` |
 | Server store หลาย project (source of truth + rev) | `store.ts` → `data/projects.json` |
 | REST CRUD โปรเจกต์ให้ UI | `app/api/projects/route.ts`, `app/api/projects/[name]/route.ts` |
-| MCP tools ทั้งหมด | `app/mcp/route.ts` (เพิ่ม tool = `server.registerTool` ใน `createServer()`) |
+| MCP tools ทั้งหมด | `app/mcp/server.ts` (เพิ่ม tool = `server.registerTool` ใน `createServer()`) — transport: `app/mcp/route.ts` (HTTP), `mcp-stdio.ts` (stdio) |
 | Key ใน localStorage | `mongomodel:index` (รายการแท็บ), `mongomodel:d:<id>` (แต่ละ diagram) — เป็น offline cache ของ server |
 
 ---

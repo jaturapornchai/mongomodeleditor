@@ -139,11 +139,12 @@ function camelCase(label: string): string {
 }
 
 /** map "sourceNodeId:fieldId" -> label ของ target node (จับคู่ด้วย sourceHandle === field.id + "-s")
- *  key รวม node id ด้วย กัน field id ซ้ำข้ามคอลเลกชัน (legacy/hand-edited JSON) ชี้ ref ผิด */
+ *  key รวม node id ด้วย กัน field id ซ้ำข้ามคอลเลกชัน (legacy/hand-edited JSON) ชี้ ref ผิด
+ *  allNodes (optional) = node ทุก diagram ในโปรเจกต์ — ใช้ resolve label ของ edge ที่ข้าม tab */
 const refKey = (nodeId: string, fieldId: string) => `${nodeId}:${fieldId}`;
 
-function buildRefMap(nodes: GenNode[], edges: GenEdge[]): Map<string, string> {
-  const labelById = new Map(nodes.map((n) => [n.id, collectionLabel(n)]));
+function buildRefMap(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode[]): Map<string, string> {
+  const labelById = new Map((allNodes ?? nodes).map((n) => [n.id, collectionLabel(n)]));
   const refs = new Map<string, string>();
   for (const edge of edges) {
     if (!edge.sourceHandle || !edge.sourceHandle.endsWith("-s")) continue;
@@ -266,9 +267,9 @@ function mongoshValue(field: Field, indent: string): string {
   return parts.length > 0 ? `{ ${parts.join(", ")} }` : "{}";
 }
 
-export function toMongosh(nodes: GenNode[], edges: GenEdge[]): string {
+export function toMongosh(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode[]): string {
   // index เฉพาะเส้น reference — embed ไม่ใช่ foreign key
-  const refs = buildRefMap(nodes, edges.filter((e) => e.data?.kind !== "embed"));
+  const refs = buildRefMap(nodes, edges.filter((e) => e.data?.kind !== "embed"), allNodes);
   return nodes
     .map((node) => {
       const label = collectionLabel(node);
@@ -372,9 +373,9 @@ function mongooseValue(
   return `{ ${opts.join(", ")} }`;
 }
 
-export function toMongoose(nodes: GenNode[], edges: GenEdge[]): string {
+export function toMongoose(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode[]): string {
   // embed ไม่ใช่ foreign key — ไม่ gen ref (ตรงกับ toMongosh)
-  const refs = buildRefMap(nodes, edges.filter((e) => e.data?.kind !== "embed"));
+  const refs = buildRefMap(nodes, edges.filter((e) => e.data?.kind !== "embed"), allNodes);
   const blocks = nodes.map((node) => {
     const label = collectionLabel(node);
     const schemaVar = `${camelCase(label)}Schema`;
@@ -448,9 +449,9 @@ export function toTypeScript(nodes: GenNode[], edges: GenEdge[]): string {
     .join("\n\n");
 }
 
-export function toMarkdown(nodes: GenNode[], edges: GenEdge[]): string {
+export function toMarkdown(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode[]): string {
   // embed ไม่ใช่ foreign key — ไม่แสดงในคอลัมน์อ้างอิง (ตรงกับ toMongosh/toMongoose)
-  const refs = buildRefMap(nodes, edges.filter((e) => e.data?.kind !== "embed"));
+  const refs = buildRefMap(nodes, edges.filter((e) => e.data?.kind !== "embed"), allNodes);
   return nodes
     .map((node) => {
       const lines: string[] = [`## ${mdEscape(collectionLabel(node))}`];
@@ -547,11 +548,11 @@ function wikiDesc(field: Field): string {
   return mdEscape(desc);
 }
 
-/** โครงสัมพันธ์ของ diagram: map field → ข้อมูลเส้น (reference/embed + cardinality) */
+/** โครงสัมพันธ์ของ diagram: map field → ข้อมูลเส้น (reference/embed + cardinality) — allNodes ใช้ resolve ข้าม tab */
 type WikiRel = { fieldName: string; targetLabel: string; kind: RelationKind; cardinality?: Cardinality };
 
-function wikiRelMap(nodes: GenNode[], edges: GenEdge[]): Map<string, WikiRel[]> {
-  const labelById = new Map(nodes.map((n) => [n.id, collectionLabel(n)]));
+function wikiRelMap(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode[]): Map<string, WikiRel[]> {
+  const labelById = new Map((allNodes ?? nodes).map((n) => [n.id, collectionLabel(n)]));
   const out = new Map<string, WikiRel[]>();
   for (const e of edges) {
     if (!e.sourceHandle || !e.sourceHandle.endsWith("-s")) continue;
@@ -660,10 +661,10 @@ function wikiCollectionNote(
   return lines.join("\n");
 }
 
-/** สร้าง wiki ทั้งชุดจาก diagram — โครงสร้างเดียวกับ wikillm (Obsidian-compatible) */
-export function toWiki(nodes: GenNode[], edges: GenEdge[], projectName: string): Record<string, string> {
+/** สร้าง wiki ทั้งชุดจาก diagram — โครงสร้างเดียวกับ wikillm (Obsidian-compatible) · allNodes = node ทุก diagram สำหรับ resolve เส้นข้าม tab */
+export function toWiki(nodes: GenNode[], edges: GenEdge[], projectName: string, allNodes?: GenNode[]): Record<string, string> {
   const files: Record<string, string> = {};
-  const allRels = wikiRelMap(nodes, edges);
+  const allRels = wikiRelMap(nodes, edges, allNodes);
   for (const node of nodes) {
     const label = collectionLabel(node);
     files[`collections/${wikiSafe(label)}.md`] = wikiCollectionNote(
@@ -886,4 +887,8 @@ export function demo(): void {
   check(wiki["types/customers__contacts.md"].includes("general-type"), "wiki array-of-object note");
   check(wiki["collections/orders.md"].includes("→ [[customers]] (reference · 1:N)"), "wiki ref out");
   check(wiki["collections/customers.md"].includes("ถูกอ้างอิงจาก [[orders]]"), "wiki ref in");
+  // relations ข้าม tab — target อยู่คนละ diagram แต่ codegen ต้อง resolve label ได้ (ส่ง allNodes ทั้งโปรเจกต์)
+  check(toMongosh([nodes[0]], edges, nodes).includes("// → customers"), "cross-tab mongosh ref");
+  check(toMongoose([nodes[0]], edges, nodes).includes('ref: "customers"'), "cross-tab mongoose ref");
+  check(toMarkdown([nodes[0]], edges, nodes).includes("| customer id | ObjectId |  | customers |"), "cross-tab markdown ref");
 }
