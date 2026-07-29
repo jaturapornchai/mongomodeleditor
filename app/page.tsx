@@ -24,6 +24,9 @@ import {
   useEdgesState,
   useReactFlow,
   useStore,
+  BaseEdge,
+  EdgeLabelRenderer,
+  getBezierPath,
   NodeResizeControl,
   ResizeControlVariant,
   ReactFlowProvider,
@@ -31,6 +34,8 @@ import {
   type Edge,
   type Connection,
   type NodeProps,
+  type EdgeProps,
+  type EdgeMarker,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import ELK from "elkjs/lib/elk.bundled.js";
@@ -49,8 +54,11 @@ import {
   toTypeScript,
   toMarkdown,
   toSampleDoc,
+  toGo,
+  lintModel,
   toWiki,
   isThaiText,
+  keyGroupsOf,
   demo,
 } from "./schema";
 
@@ -79,7 +87,8 @@ type DiagramMeta = { id: string; name: string };
 type EditState =
   | { kind: "collDesc"; text: string }
   | { kind: "fieldDesc"; fid: string; name: string; text: string }
-  | { kind: "enumDefault"; fid: string; name: string; enumText: string; def: string };
+  | { kind: "enumDefault"; fid: string; name: string; enumText: string; def: string }
+  | { kind: "keyGroup"; fid: string; name: string; text: string };
 
 const uid = () => crypto.randomUUID().slice(0, 8);
 const INDEX_KEY = "mongomodel:index";
@@ -119,6 +128,24 @@ const removeFieldInTree = (fields: Field[], fid: string): Field[] =>
   fields
     .filter((f) => f.id !== fid)
     .map((f) => (f.children ? { ...f, children: removeFieldInTree(f.children, fid) } : f));
+
+// กลุ่ม key ที่ pin บนสุดของ collection: PK(_id ตัวแรก) / key(🔑) / sessionkey(🌐) / keygroup(⛓ key ผสม) — field อื่นตามหลัง
+const isKeyField = (fields: Field[], f: Field): boolean =>
+  Boolean(f.key || f.sessionkey || f.keygroup || (f.name === "_id" && fields.find((o) => o.name === "_id") === f));
+
+/** field ที่เพิ่งติดธง key ให้กระโดดขึ้นไปต่อท้ายกลุ่ม key ด้านบน (คงลำดับเดิมภายในกลุ่ม) */
+const pinKeyField = (fields: Field[], fid: string): Field[] => {
+  const idx = fields.findIndex((f) => f.id === fid);
+  if (idx < 0 || !isKeyField(fields, fields[idx])) return fields;
+  const f = fields[idx];
+  const rest = fields.filter((o) => o.id !== fid);
+  let last = -1;
+  rest.forEach((o, i) => {
+    if (isKeyField(rest, o)) last = i;
+  });
+  rest.splice(last + 1, 0, f);
+  return rest;
+};
 
 const addChildInTree = (fields: Field[], parentId: string, child: Field): Field[] =>
   fields.map((f) =>
@@ -190,7 +217,7 @@ const starterEdges: RelEdge[] = [
     source: "orders",
     sourceHandle: "o2-s",
     target: "users",
-    targetHandle: "ref",
+    targetHandle: "u1-t",
   },
 ];
 
@@ -209,6 +236,7 @@ type FieldRowProps = {
   onAddChild: (parentId: string) => void;
   onEditDesc: (f: Field) => void;
   onEditEnumDefault: (f: Field) => void;
+  onEditKeyGroup: (f: Field) => void;
   dragIndexRef: { current: number | null };
 };
 
@@ -223,10 +251,13 @@ function FieldRow({
   onAddChild,
   onEditDesc,
   onEditEnumDefault,
+  onEditKeyGroup,
   dragIndexRef,
 }: FieldRowProps) {
   const top = depth === 0;
   const nest = canNest(f);
+  // field ที่เป็น key (PK/🔑/🌐/⛓ keygroup) ไม่วาดจุดเชื่อมที่แถวตัวเอง — ย้ายไปรวมที่แถบ key ด้านบนการ์ด (KeyBar ใน CollectionNodeView) handle id เหมือนเดิมเส้นไม่พัง
+  const keyHandles = top && (isPK || f.key || f.sessionkey || Boolean(f.keygroup));
   const nameErr =
     f.name.trim() === ""
       ? "ชื่อว่าง"
@@ -236,7 +267,7 @@ function FieldRow({
   return (
     <>
       <div className="relative flex items-center gap-1.5">
-        {top && <Handle type="target" position={Position.Left} id={`${f.id}-t`} />}
+        {/* relation เป็น field→field: ต้นเส้น -s ซ้าย (FK) ปลายเส้น -t ขวา (business key ที่ถูกอ้าง) — ไม่มี handle ระดับ node */}
         {/* จับ ⠿ ลากปล่อยเพื่อจัดลำดับ field — เฉพาะ top-level */}
         {top && (
           <span
@@ -255,11 +286,15 @@ function FieldRow({
             ⠿
           </span>
         )}
-        {/* _id = primary key ของ MongoDB — first-wins ตรงกับ codegen (เฉพาะ top-level) */}
-        <span className="w-4 shrink-0 text-center text-xs">
-          {isPK ? (
-            <span title="Primary key">🔑</span>
-          ) : (
+        {/* _id = primary key ของ MongoDB — first-wins ตรงกับ codegen (เฉพาะ top-level); f.key = business key ที่ collection อื่นอ้างอิง; f.sessionkey = tenant/session scope (เช่น holdingcode); f.keygroup = สมาชิก key ผสม (⛓)
+            ปุ่ม * (required) แสดงควบคู่ไอคอน key เสมอ ยกเว้น PK (_id บังคับ required อยู่แล้ว) — สมาชิก key ผสมต้อง toggle required ได้ตามที่ 🩺 ตรวจแนะนำ */}
+        <span className="flex min-w-8 shrink-0 items-center justify-center gap-0.5 text-xs">
+          {(isPK || f.key) && (
+            <span title={isPK ? "Primary key" : "Business key — collection อื่นอ้างอิง field นี้"}>🔑</span>
+          )}
+          {f.sessionkey && <span title="Session key — tenant scope (เช่น holdingcode)">🌐</span>}
+          {f.keygroup && <span title={`สมาชิก key ผสม (กลุ่ม "${f.keygroup}") — รวมกับ field อื่นในกลุ่มเป็น key เดียว`}>⛓</span>}
+          {!isPK && (
             <button
               className={`nodrag font-bold ${f.required ? "text-red-400" : "text-slate-600 hover:text-slate-400"}`}
               title={f.required ? "จำเป็นต้องมี (คลิกเพื่อยกเลิก)" : "ไม่บังคับ (คลิกเพื่อบังคับ)"}
@@ -345,6 +380,39 @@ function FieldRow({
         )}
         {top && (
           <button
+            className={`nodrag shrink-0 text-[10px] ${
+              f.key ? "opacity-100" : "opacity-30 hover:opacity-70"
+            }`}
+            title={f.key ? "business key — collection อื่นอ้างอิง field นี้ (คลิกเพื่อยกเลิก)" : "ตั้งเป็น business key (🔑)"}
+            onClick={() => onPatch(f.id, { key: !f.key })}
+          >
+            🔑
+          </button>
+        )}
+        {top && (
+          <button
+            className={`nodrag shrink-0 text-[10px] ${
+              f.sessionkey ? "opacity-100" : "opacity-30 hover:opacity-70"
+            }`}
+            title={f.sessionkey ? "session key — tenant scope (คลิกเพื่อยกเลิก)" : "ตั้งเป็น session key (🌐)"}
+            onClick={() => onPatch(f.id, { sessionkey: !f.sessionkey })}
+          >
+            🌐
+          </button>
+        )}
+        {top && (
+          <button
+            className={`nodrag shrink-0 text-[10px] ${
+              f.keygroup ? "text-sky-300 opacity-100" : "opacity-30 hover:opacity-70"
+            }`}
+            title={f.keygroup ? `key ผสม กลุ่ม "${f.keygroup}" (คลิกเพื่อแก้/ออกจากกลุ่ม)` : "ตั้ง key ผสม — หลาย field รวมเป็น key เดียว (⛓)"}
+            onClick={() => onEditKeyGroup(f)}
+          >
+            ⛓
+          </button>
+        )}
+        {top && (
+          <button
             className={`nodrag shrink-0 text-[10px] font-bold ${
               f.unique ? "text-amber-300" : "text-slate-600 hover:text-slate-400"
             }`}
@@ -352,6 +420,22 @@ function FieldRow({
             onClick={() => onPatch(f.id, { unique: !f.unique })}
           >
             U
+          </button>
+        )}
+        {/* array ของ object เท่านั้น — ยืนยันว่ามีขอบเขต (ไม่โตไม่จำกัดจนชนเพดานเอกสาร 16MB) */}
+        {f.type === "Array" && (f.of === "Object" || (f.children?.length ?? 0) > 0) && (
+          <button
+            className={`nodrag shrink-0 text-[10px] ${
+              f.bounded ? "text-emerald-300" : "text-slate-600 hover:text-slate-400"
+            }`}
+            title={
+              f.bounded
+                ? "ยืนยันแล้วว่า array นี้มีขอบเขต (linter ไม่เตือนเรื่องเพดาน 16MB)"
+                : "ทำเครื่องหมายว่า array นี้มีขอบเขตแล้ว — ไม่โตไม่จำกัด"
+            }
+            onClick={() => onPatch(f.id, { bounded: !f.bounded })}
+          >
+            ⊂
           </button>
         )}
         <button
@@ -376,7 +460,17 @@ function FieldRow({
         >
           ✕
         </button>
-        {top && <Handle type="source" position={Position.Right} id={`${f.id}-s`} />}
+        {/* จุดเชื่อมลอยนอกการ์ด แยกตำแหน่งกัน: -s (FK ต้นเส้น) นอก 10px, -t (amber ปลายทาง) นอก 24px — ไม่ทับไอคอนในแถว ไม่ทับกันเอง หัวลูกศรอยู่นอกการ์ดเห็นชัด
+            ข้างที่ใช้เลือกอัตโนมัติตอน render (displayEdges); เก็บ canonical -s/-t (normalize ตอน onConnect); ลากเริ่มได้ทั้ง 2 ฝั่ง React Flow จัดทิศตาม type เอง
+            key field (PK/🔑/🌐) ข้ามตรงนี้ — จุดเชื่อมอยู่ที่แถบ key ด้านบนการ์ดแทน */}
+        {top && !keyHandles && (
+          <>
+            <Handle type="target" position={Position.Left} id={`${f.id}-t-l`} className="!bg-amber-400" style={{ left: -24 }} />
+            <Handle type="target" position={Position.Right} id={`${f.id}-t-r`} className="!bg-amber-400" style={{ right: -24 }} />
+            <Handle type="source" position={Position.Left} id={`${f.id}-s-l`} style={{ left: -10 }} />
+            <Handle type="source" position={Position.Right} id={`${f.id}-s-r`} style={{ right: -10 }} />
+          </>
+        )}
       </div>
       {/* คำอธิบาย — บรรทัดของตัวเอง เต็มข้อความ ขึ้นบรรทัดใหม่อัตโนมัติ (ไม่ตัด …) คลิกเพื่อแก้ */}
       {f.description && (
@@ -418,6 +512,7 @@ function FieldRow({
               onAddChild={onAddChild}
               onEditDesc={onEditDesc}
               onEditEnumDefault={onEditEnumDefault}
+              onEditKeyGroup={onEditKeyGroup}
               dragIndexRef={dragIndexRef}
             />
           ))}
@@ -436,7 +531,7 @@ function FieldRow({
 // ---------- โหนดคอลเลกชัน ----------
 
 function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
-  const { updateNodeData, deleteElements, setEdges, getNode, addNodes } =
+  const { updateNodeData, deleteElements, getEdges, getNode, addNodes } =
     useReactFlow<CollectionNode>();
   const [editingLabel, setEditingLabel] = useState(false);
   const [editing, setEditing] = useState<EditState | null>(null);
@@ -455,19 +550,173 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
         ? "ชื่อซ้ำ"
         : "";
 
-  const patchField = (fid: string, patch: Partial<Field>) =>
-    updateNodeData(id, { fields: updateFieldInTree(data.fields, fid, patch) });
+  // key ทั้งหมดของ collection (PK ตัวแรก/🔑/🌐/⛓ keygroup) — แสดงสรุปที่แถบ key ด้านบนการ์ด พร้อมจุดเชื่อมเส้น (ย้ายมาจากแถว field)
+  const keyFields = data.fields.filter((f) => isKeyField(data.fields, f));
+  // กลุ่ม key ผสม — fields ที่มี keygroup เดียวกันรวมแสดงเป็นกลุ่มเดียว (⛓ a + b + c) สมาชิกแต่ละตัวยังมีจุดเชื่อมของตัวเอง
+  const keyGroups = keyGroupsOf(data.fields);
+  const groupMemberIds = new Set(keyGroups.flatMap((g) => g.fields.map((f) => f.id)));
+  const soloKeys = keyFields.filter((f) => !groupMemberIds.has(f.id));
+
+  // collection ในแท็บนี้ที่อ้างถึง key แต่ละตัว (เส้นขาเข้า) — แสดง badge ← N ที่แถบ key
+  const refFrom = useStore(
+    (s) => {
+      const m: Record<string, string[]> = {};
+      for (const e of s.edges) {
+        if (e.target !== id || !e.targetHandle) continue;
+        const fid = e.targetHandle.replace(/-t(-[lr])?$/, "");
+        const lbl = (s.nodes.find((n) => n.id === e.source)?.data as CollectionData | undefined)
+          ?.label;
+        if (lbl && !(m[fid] ??= []).includes(lbl)) m[fid].push(lbl);
+      }
+      return m;
+    },
+    (a, b) => {
+      const ka = Object.keys(a);
+      return (
+        ka.length === Object.keys(b).length &&
+        ka.every((k) => {
+          const x = a[k];
+          const y = b[k];
+          return !!y && x.length === y.length && x.every((v, i) => v === y[i]);
+        })
+      );
+    }
+  );
+
+  // แถว key 1 แถวในแถบ key (ใช้ทั้ง key เดี่ยวและสมาชิก key ผสม) — จุดเชื่อมครบ 4 handle (id เดิมจากแถว field เส้นไม่พัง) + badge จำนวนที่ถูกอ้าง
+  // reorder: ใส่เฉพาะสมาชิก key ผสม — ปุ่ม ↑↓ เรียงลำดับในกลุ่ม (ลำดับมีผลต่อ compound index)
+  const keyRow = (f: Field, reorder?: { first: boolean; last: boolean; onUp: () => void; onDown: () => void; onRemove: () => void; unique: boolean }) => {
+    const pk = f.name === "_id" && data.fields.find((o) => o.name === "_id") === f;
+    const refs = refFrom[f.id] ?? [];
+    return (
+      <div key={f.id} className="relative flex items-center gap-1.5 py-0.5">
+        {/* spacer ความกว้างเท่า grip ⠿ ของแถว field — ให้คอลัมน์ไอคอน/ชื่อของ key ตรงระดับซ้ายกับแถว field (key กับ field คนละเรื่องกัน แต่ต้องเรียงระดับเดียวกัน) */}
+        <span className="invisible shrink-0 select-none" aria-hidden="true">⠿</span>
+        <span className="flex min-w-8 shrink-0 items-center justify-center gap-0.5 text-xs">
+          {(pk || f.key) && (
+            <span title={pk ? "Primary key" : "Business key — collection อื่นอ้างอิง field นี้"}>🔑</span>
+          )}
+          {f.sessionkey && <span title="Session key — tenant scope (เช่น holdingcode)">🌐</span>}
+          {f.keygroup && <span title={`สมาชิก key ผสม (กลุ่ม "${f.keygroup}")`}>⛓</span>}
+        </span>
+        <span className={`font-semibold ${pk ? "text-amber-200" : "text-slate-100"}`}>
+          {f.name}
+        </span>
+        {reorder?.unique && !f.required && (
+          <span
+            className="text-[10px] text-amber-400"
+            title="สมาชิก key ผสมแบบห้ามซ้ำควรบังคับ required — ถ้าว่างได้ เอกสารที่ว่างตรงกัน ≥2 แถวจะชน unique (duplicate null) บันทึกไม่ผ่าน"
+          >
+            ⚠
+          </span>
+        )}
+        <span className="text-[10px] text-slate-500" title={f.type}>
+          {TYPE_ICON[f.type] ?? "?"}
+        </span>
+        {reorder && (
+          <span className="nodrag ml-auto flex shrink-0 items-center">
+            <button
+              className="px-0.5 text-[10px] text-slate-500 hover:text-sky-300 disabled:opacity-20 disabled:hover:text-slate-500"
+              title="เลื่อนขึ้น — ลำดับใน key ผสมมีผลต่อ compound index (prefix)"
+              disabled={reorder.first}
+              onClick={reorder.onUp}
+            >
+              ↑
+            </button>
+            <button
+              className="px-0.5 text-[10px] text-slate-500 hover:text-sky-300 disabled:opacity-20 disabled:hover:text-slate-500"
+              title="เลื่อนลง — ลำดับใน key ผสมมีผลต่อ compound index (prefix)"
+              disabled={reorder.last}
+              onClick={reorder.onDown}
+            >
+              ↓
+            </button>
+            <button
+              className="px-0.5 text-[10px] text-slate-500 hover:text-red-400"
+              title="เอาออกจาก key ผสม (field ยังอยู่)"
+              onClick={reorder.onRemove}
+            >
+              ✕
+            </button>
+          </span>
+        )}
+        {refs.length > 0 && (
+          <span
+            className="ml-auto rounded bg-amber-400/15 px-1.5 text-[10px] text-amber-300"
+            title={`ถูกอ้างโดย (แท็บนี้): ${refs.join(", ")}`}
+          >
+            ← {refs.length}
+          </span>
+        )}
+        {/* จุดเชื่อมของ key — handle id เดิมที่เคยอยู่แถว field เส้นเดิมไม่พัง; ข้างซ้าย/ขวาเลือกอัตโนมัติตอน render (displayEdges) */}
+        <Handle type="target" position={Position.Left} id={`${f.id}-t-l`} className="!bg-amber-400" style={{ left: -24 }} />
+        <Handle type="target" position={Position.Right} id={`${f.id}-t-r`} className="!bg-amber-400" style={{ right: -24 }} />
+        <Handle type="source" position={Position.Left} id={`${f.id}-s-l`} style={{ left: -10 }} />
+        <Handle type="source" position={Position.Right} id={`${f.id}-s-r`} style={{ right: -10 }} />
+      </div>
+    );
+  };
+
+  // เอาสมาชิกออกจาก key ผสม (field ยังอยู่ — แค่ล้าง keygroup; ถ้ายังมี key/🌐 จะไปอยู่แถว key เดี่ยวแทน)
+  const removeFromGroup = (f: Field) => patchField(f.id, { keygroup: undefined });
+
+  // ยกเลิก key ผสมทั้งกลุ่ม — ล้าง keygroup ทุกสมาชิก (fields ไม่ถูกลบ)
+  const removeGroup = (g: { id: string; fields: Field[] }) => {
+    let fs = data.fields;
+    for (const f of g.fields) fs = updateFieldInTree(fs, f.id, { keygroup: undefined });
+    updateNodeData(id, { fields: fs });
+  };
+
+  // สลับโหมดกลุ่ม ห้ามซ้ำ ⇄ ซ้ำได้ — เขียน keygroupunique ซ้ำทุกสมาชิก (ค่ากลุ่มอ่านจากตัวแรก)
+  const setGroupUnique = (g: { id: string; fields: Field[] }, unique: boolean) => {
+    let fs = data.fields;
+    for (const f of g.fields) fs = updateFieldInTree(fs, f.id, { keygroupunique: unique });
+    updateNodeData(id, { fields: fs });
+  };
+
+  // เรียงลำดับสมาชิก key ผสม — ลำดับกลุ่มผูกกับลำดับ field จริง (source of truth เดียว: codegen compound index ออกตามลำดับนี้)
+  // สลับเฉพาะสมาชิกในกลุ่ม โดยยัดสมาชิกกลับช่องเดิมของตัวเองตามลำดับใหม่ (field อื่นไม่ขยับ)
+  const moveGroupMember = (g: { id: string; fields: Field[] }, fid: string, dir: -1 | 1) => {
+    const ids = g.fields.map((f) => f.id);
+    const i = ids.indexOf(fid);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    const next = [...ids];
+    [next[i], next[j]] = [next[j], next[i]];
+    const slots = data.fields
+      .map((f, idx) => (ids.includes(f.id) ? idx : -1))
+      .filter((x) => x >= 0)
+      .sort((a, b) => a - b);
+    const byId = new Map(data.fields.map((f) => [f.id, f]));
+    const fs = [...data.fields];
+    slots.forEach((slot, k) => {
+      fs[slot] = byId.get(next[k])!;
+    });
+    updateNodeData(id, { fields: fs });
+  };
+
+  const patchField = (fid: string, patch: Partial<Field>) => {
+    const patched = updateFieldInTree(data.fields, fid, patch);
+    // ติดธง key/sessionkey/keygroup ปุ๊บ pin ขึ้นกลุ่ม key ด้านบนทันที (เฉพาะระดับบน)
+    updateNodeData(id, {
+      fields:
+        patch.key === true || patch.sessionkey === true || (typeof patch.keygroup === "string" && patch.keygroup !== "")
+          ? pinKeyField(patched, fid)
+          : patched,
+    });
+  };
 
   const removeField = (fid: string) => {
     updateNodeData(id, { fields: removeFieldInTree(data.fields, fid) });
-    // ลบเส้นเชื่อมที่ค้างอยู่กับฟิลด์นี้
-    setEdges((es) =>
-      es.filter(
-        (e) =>
-          !(e.source === id && e.sourceHandle === `${fid}-s`) &&
-          !(e.target === id && e.targetHandle === `${fid}-t`)
-      )
+    // ลบเส้นเชื่อมที่ค้างอยู่กับฟิลด์นี้ — ต้องผ่าน deleteElements (เดินผ่าน onEdgesChange)
+    // เพราะ edges เป็น controlled state ของ Designer: setEdges ของ useReactFlow แก้แค่ store ภายใน แล้วโดนเขียนทับ = เส้นค้างถาวร
+    // handle ใน store เป็นแบบเลือกข้างแล้ว (-s-l/-s-r) ส่วนข้อมูลเก็บ canonical (-s/-t) → เทียบด้วย field id หลังตัด suffix
+    const dead = getEdges().filter(
+      (e) =>
+        (e.source === id && e.sourceHandle?.replace(/-s(-[lr])?$/, "") === fid) ||
+        (e.target === id && e.targetHandle?.replace(/-t(-[lr])?$/, "") === fid)
     );
+    if (dead.length) deleteElements({ edges: dead.map((e) => ({ id: e.id })) });
   };
 
   const addField = () => {
@@ -519,6 +768,8 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
       enumText: f.enum?.join(", ") ?? "",
       def: f.default ?? "",
     });
+  const editKeyGroup = (f: Field) =>
+    setEditing({ kind: "keyGroup", fid: f.id, name: f.name, text: f.keygroup ?? "" });
 
   // บันทึกค่าจาก popup — คำอธิบายบังคับภาษาไทย (ว่าง/ไม่ใช่ไทย = ไม่ให้บันทึก)
   const saveEditing = () => {
@@ -535,6 +786,9 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
       }
       if (editing.kind === "collDesc") updateNodeData(id, { description: text });
       else patchField(editing.fid, { description: text });
+    } else if (editing.kind === "keyGroup") {
+      // key ผสม — ว่าง = ออกจากกลุ่ม (id กลุ่มเป็น identifier ไม่บังคับไทย)
+      patchField(editing.fid, { keygroup: editing.text.trim() || undefined });
     } else {
       const list = editing.enumText.split(",").map((s) => s.trim()).filter(Boolean);
       patchField(editing.fid, {
@@ -547,9 +801,7 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
 
   return (
     <div
-      className={`w-full min-w-[22rem] rounded-lg border bg-slate-800 text-xs shadow-xl shadow-black/30 ${
-        selected ? "border-sky-400" : "border-slate-600"
-      }`}
+      className={`mm-card w-full min-w-[22rem] border text-xs ${selected ? "mm-card-selected border-sky-400/70" : "border-white/10"}`}
     >
       {/* ลากขอบขวาปรับความกว้าง (สูง auto, width เก็บถาวรใน node) */}
       <NodeResizeControl
@@ -562,12 +814,10 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
 
       {/* หัวคอลเลกชัน */}
       <div
-        className={`relative flex items-center gap-2 rounded-t-lg bg-blue-900 px-3 py-1.5 border-b border-slate-600 ${
-          labelErr ? "ring-1 ring-red-500" : ""
-        }`}
+        className={`mm-card-head relative flex items-center gap-2 border-b border-white/10 px-3 py-2 ${labelErr ? "ring-1 ring-red-500" : ""}`}
         title={labelErr || undefined}
       >
-        <Handle type="target" position={Position.Left} id="ref" className="!bg-amber-400" />
+        {/* ไม่มี handle ระดับ node — relation ต้องชี้ลง field เป้าหมาย (business key) เสมอ */}
         {/* ชื่อเป็นข้อความ → กดค้างที่หัวเพื่อย้าย node ได้, ดับเบิลคลิกเพื่อแก้ inline */}
         {editingLabel ? (
           <input
@@ -637,6 +887,61 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
         </div>
       )}
 
+      {/* แถบ key — สรุป key ทั้งหมดของ collection (PK/🔑/🌐/⛓ key ผสม) ไว้ด้านบนเสมอ พร้อมจุดเชื่อมเส้นข้างการ์ด (ลากเชื่อม collection อื่นมาที่ key ได้เลย) + badge จำนวนที่ถูกอ้าง */}
+      {keyFields.length > 0 && (
+        <div className="border-b border-slate-700/60 bg-blue-950/40 px-3 py-1">
+          <div className="text-[10px] font-semibold tracking-wide text-sky-300/80">
+            🔑 key ของ collection นี้ — ลากเส้นจากจุดข้างการ์ดเพื่อเชื่อมมาที่ key
+          </div>
+          {soloKeys.map((f) => keyRow(f))}
+          {/* กลุ่ม key ผสม — หลาย field รวมเป็น key เดียว แสดงเป็นกรอบกลุ่มเดียว สมาชิกแต่ละตัวมีจุดเชื่อมของตัวเอง (relation ยังเป็น field→field) */}
+          {keyGroups.map((g) => (
+            <div key={g.id} className="mt-0.5 rounded border border-sky-700/60 bg-sky-950/40 px-1 py-0.5">
+              <div
+                className="flex items-center justify-between gap-1 px-1 text-[10px] font-semibold text-sky-300/90"
+                title={`key ผสม (กลุ่ม "${g.id}") — ${g.fields.length} field รวมเป็น key เดียว (${g.unique ? "compound unique index" : "compound index ธรรมดา"})`}
+              >
+                <span>
+                  ⛓ key ผสม: {g.fields.map((f) => f.name).join(" + ")}
+                  {g.fields.length < 2 && <span className="text-amber-400"> ⚠ ต้องมี ≥2 field</span>}
+                </span>
+                <span className="flex shrink-0 items-center">
+                  {/* โหมดกลุ่ม: ห้ามซ้ำ (unique) ⇄ ซ้ำได้ (index เพื่อค้นเร็ว) */}
+                  <button
+                    className={`nodrag rounded border px-1 text-[9px] ${
+                      g.unique
+                        ? "border-amber-600/60 text-amber-300"
+                        : "border-slate-600 text-slate-400 hover:text-slate-200"
+                    }`}
+                    title={g.unique ? "ห้ามซ้ำ — compound unique index (กดเพื่อเปลี่ยนเป็น ซ้ำได้)" : "ซ้ำได้ — compound index ธรรมดา เพื่อค้นเร็ว (กดเพื่อเปลี่ยนเป็น ห้ามซ้ำ)"}
+                    onClick={() => setGroupUnique(g, !g.unique)}
+                  >
+                    {g.unique ? "ห้ามซ้ำ" : "ซ้ำได้"}
+                  </button>
+                  <button
+                    className="nodrag shrink-0 px-0.5 text-slate-500 hover:text-red-400"
+                    title={`ยกเลิก key ผสมทั้งกลุ่ม "${g.id}" (fields ยังอยู่)`}
+                    onClick={() => removeGroup(g)}
+                  >
+                    ✕
+                  </button>
+                </span>
+              </div>
+              {g.fields.map((f, i) =>
+                keyRow(f, {
+                  first: i === 0,
+                  last: i === g.fields.length - 1,
+                  onUp: () => moveGroupMember(g, f.id, -1),
+                  onDown: () => moveGroupMember(g, f.id, 1),
+                  onRemove: () => removeFromGroup(f),
+                  unique: g.unique,
+                })
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* รายการฟิลด์ — recursive ผ่าน FieldRow (nested document) */}
       <div className="divide-y divide-slate-700/60">
         {data.fields.map((f, fi) => (
@@ -660,6 +965,7 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
               onAddChild={addChild}
               onEditDesc={editFieldDescription}
               onEditEnumDefault={editEnumDefault}
+              onEditKeyGroup={editKeyGroup}
               dragIndexRef={dragIndex}
             />
           </div>
@@ -681,7 +987,7 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
             onClick={() => setEditing(null)}
           >
             <div
-              className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-4 text-sm shadow-2xl"
+              className="mm-panel w-full max-w-md p-5 text-sm"
               onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
                 if (e.key === "Escape") setEditing(null);
@@ -692,10 +998,51 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
                   ? "คำอธิบายคอลเลกชัน"
                   : editing.kind === "fieldDesc"
                     ? `คำอธิบายฟิลด์ "${editing.name}"`
-                    : `enum / ค่าเริ่มต้น ของ "${editing.name}"`}
+                    : editing.kind === "keyGroup"
+                      ? `key ผสม ของ "${editing.name}"`
+                      : `enum / ค่าเริ่มต้น ของ "${editing.name}"`}
               </h3>
 
-              {editing.kind === "enumDefault" ? (
+              {editing.kind === "keyGroup" ? (
+                <div className="space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs text-slate-400">
+                      id กลุ่ม key ผสม — fields ที่มี id เดียวกันรวมเป็น key เดียว (ว่าง = ออกจากกลุ่ม)
+                    </label>
+                    <input
+                      autoFocus
+                      className="mm-input w-full px-3 py-2 text-sm"
+                      placeholder="เช่น barcode"
+                      value={editing.text}
+                      onChange={(e) => setEditing({ ...editing, text: e.target.value })}
+                      onKeyDown={(e) => e.key === "Enter" && saveEditing()}
+                    />
+                  </div>
+                  {/* กลุ่มที่มีอยู่ใน collection นี้ — กดเพื่อเลือก */}
+                  {keyGroups.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="text-slate-500">กลุ่มที่มี:</span>
+                      {keyGroups.map((g) => (
+                        <button
+                          key={g.id}
+                          className={`rounded border px-2 py-0.5 ${
+                            editing.text === g.id
+                              ? "border-sky-500 bg-sky-900/50 text-sky-200"
+                              : "border-slate-700 text-slate-300 hover:border-sky-700"
+                          }`}
+                          title={g.fields.map((f) => f.name).join(" + ")}
+                          onClick={() => setEditing({ ...editing, text: g.id })}
+                        >
+                          ⛓ {g.id} ({g.fields.length})
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="text-xs text-slate-500">
+                    key ผสม = หลาย field รวมกัน unique ร่วมกัน (compound unique index) เช่น holdingcode + itemcode + barcode
+                  </div>
+                </div>
+              ) : editing.kind === "enumDefault" ? (
                 <div className="space-y-3">
                   <div>
                     <label className="mb-1 block text-xs text-slate-400">
@@ -770,7 +1117,130 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
   );
 }
 
-const nodeTypes = { collection: CollectionNodeView };
+/** node เสมือนปลายทางเส้นข้าม tab — เส้นประทึบ + กดเพื่อข้ามไป tab นั้น (derive ตอน render ไม่ persist) */
+function CrossRefNodeView({ data }: NodeProps<Node<CollectionData>>) {
+  return (
+    <div
+      className="cursor-pointer rounded-lg border border-dashed border-amber-500/70 bg-slate-900/90 px-3 py-2 text-xs shadow-lg"
+      title={`ไปที่แท็บ "${data.description ?? ""}"`}
+    >
+      <div className="font-semibold text-amber-300">{data.label}</div>
+      <div className="text-slate-400">⇢ แท็บ “{data.description}” — กดเพื่อข้ามไป</div>
+      {(data.refHandles ?? []).map((h, i) => (
+        <span key={h}>
+          <Handle type="target" position={Position.Left} id={`${h}-l`} className="!bg-amber-400" style={{ left: -10, top: 16 + i * 16 }} />
+          <Handle type="target" position={Position.Right} id={`${h}-r`} className="!bg-amber-400" style={{ right: -10, top: 16 + i * 16 }} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+const nodeTypes = { collection: CollectionNodeView, crossref: CrossRefNodeView };
+
+// ระยะเว้นจากจุดเชื่อมถึงปลายเส้น — react flow ตรึง marker ไว้ที่ refX=0 (ปลายแหลม = จุดปลาย path
+// = ศูนย์กลาง handle พอดี) หัวลูกศรยาวแค่ ~7.5px จึงจมอยู่ในวงจุด (รัศมีที่มองเห็น ~8px) จนมองไม่เห็น
+// ขยับปลาย path ออกก่อนวาดเอง = ลูกศรพ้นวงจุดและมีช่องว่างหายใจ (ลุคเดียวกับ Figma/Linear)
+const EDGE_GAP_SOURCE = 17; // ฝั่งลูก — มีหัวลูกศร ต้องเว้นมากกว่า
+const EDGE_GAP_TARGET = 12; // ฝั่งแม่ — ปลายเปล่า เว้นพอไม่ให้เส้นเสียบทับจุด
+const LABEL_START = 44; // ระยะป้ายแรกจากปลายเส้นฝั่งลูก (px)
+const LANE_STEP = 34; // เลื่อนป้ายเส้นถัดไปของการ์ดเดียวกันไปตามแนวเส้น
+const LANE_SIDE = 15; // ระยะตั้งฉากจากเส้น สลับข้างทีละ lane (รวมสองฝั่ง = 30px > ความสูงป้าย)
+
+/** ขยับจุดปลายออกจากการ์ดตามข้างที่ handle อยู่ */
+function shiftEndpoint(x: number, y: number, pos: Position, d: number): [number, number] {
+  if (pos === Position.Left) return [x - d, y];
+  if (pos === Position.Right) return [x + d, y];
+  if (pos === Position.Top) return [x, y - d];
+  return [x, y + d];
+}
+
+/**
+ * เส้น relation — bezier เหมือนเดิมทุกอย่าง ต่างแค่ (1) เว้นช่องว่างที่ปลายทั้งสองข้าง
+ * (2) ป้ายชื่อ field ขยับมาอยู่ช่วงต้นเส้นฝั่งลูกแทนกึ่งกลาง เส้นที่วิ่งขนานกันจึงไม่กองป้ายทับกัน
+ */
+function RelEdgeView({
+  id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition,
+  style, markerStart, label, data,
+}: EdgeProps) {
+  const [sx, sy] = shiftEndpoint(sourceX, sourceY, sourcePosition, EDGE_GAP_SOURCE);
+  const [tx, ty] = shiftEndpoint(targetX, targetY, targetPosition, EDGE_GAP_TARGET);
+  const [path, labelX, labelY] = getBezierPath({
+    sourceX: sx, sourceY: sy, sourcePosition,
+    targetX: tx, targetY: ty, targetPosition,
+  });
+  // ป้ายเกาะช่วงต้นเส้นฝั่งลูก (~14% ของความยาว) ไม่ใช่กึ่งกลาง — กึ่งกลางของทุกเส้นที่วิ่ง
+  // ระหว่างการ์ดคู่เดียวกันตกจุดเดียวกันหมด แต่ต้นเส้นคือแถว field ของตัวเอง ป้ายจึงแยกกันเอง
+  // เส้นที่ออกจากการ์ดเดียวกันวิ่งขนานกัน ป้ายจึงกองทับ — เลื่อนป้ายไปตามแนวเส้นทีละ LANE_STEP
+  // ใช้ระยะคงที่ (px) ไม่ใช่สัดส่วนความยาว เพราะเส้นสั้น ๆ (~150px) เหลื่อมแบบสัดส่วนได้ไม่ถึง
+  // ความสูงป้าย (~26px) ก็ยังทับกันอยู่ดี
+  const lane = typeof data?.lane === "number" ? data.lane : 0;
+  const dx = labelX - sx;
+  const dy = labelY - sy;
+  const len = Math.hypot(dx, dy) || 1;
+  const dist = Math.min(LABEL_START, len * 0.9); // เกาะช่วงต้นเส้น ไม่เลยปลาย
+  const lx = sx + (dx / len) * dist;
+  // เลื่อนแนวตั้งตรง ๆ ทีละ LANE_STEP — เลื่อนตามแนวเส้นไม่พอเพราะเส้นส่วนใหญ่เกือบแนวนอน
+  // (ระยะแนวตั้งที่ได้น้อยกว่าความสูงป้าย) และยังไปหักล้างกับระยะระหว่างแถว field พอดี
+  const ly = sy + (dy / len) * dist + lane * LANE_STEP;
+  const dim = typeof style?.opacity === "number" && style.opacity < 0.5;
+  return (
+    <>
+      <BaseEdge id={id} path={path} style={style} markerStart={markerStart} />
+      {label && (
+        <EdgeLabelRenderer>
+          <div
+            className="mm-edge-label nodrag nopan"
+            style={{ transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)`, opacity: dim ? 0.25 : 1 }}
+          >
+            {label}
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
+}
+
+const edgeTypes = { rel: RelEdgeView };
+
+// ---------- ธีมมืด/สว่าง ----------
+// เก็บที่ localStorage + เขียนลง <html data-theme> ให้ css สลับสเกลสีทั้งชุด (ดู globals.css)
+type Theme = "dark" | "light";
+const THEME_KEY = "mongomodel-theme";
+
+function useTheme(): [Theme, () => void] {
+  const [theme, setTheme] = useState<Theme>("dark");
+  useEffect(() => {
+    const saved = localStorage.getItem(THEME_KEY);
+    // ไม่เคยเลือก = ตามค่าระบบ
+    const initial: Theme =
+      saved === "light" || saved === "dark"
+        ? saved
+        : window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light"
+          : "dark";
+    setTheme(initial);
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+  return [theme, () => setTheme((t) => (t === "dark" ? "light" : "dark"))];
+}
+
+/** ปุ่มสลับธีมบน toolbar */
+function ThemeButton({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+  return (
+    <button
+      className="mm-btn px-2.5"
+      title={theme === "dark" ? "สลับเป็นโหมดสว่าง" : "สลับเป็นโหมดมืด"}
+      onClick={onToggle}
+    >
+      {theme === "dark" ? "☀️" : "🌙"}
+    </button>
+  );
+}
 
 // ---------- จัดการ diagram ใน localStorage ----------
 
@@ -848,7 +1318,7 @@ function readFile(file: File, apply: (list: ReturnType<typeof parseDiagramFile>)
 
 // ---------- ศูนย์ส่งออกโค้ด ----------
 
-const CODE_TABS = ["mongosh", "Mongoose", "TypeScript", "Markdown", "Wiki", "ตัวอย่าง", "JSON"] as const;
+const CODE_TABS = ["mongosh", "Go", "Mongoose", "TypeScript", "Markdown", "Wiki", "ตัวอย่าง", "JSON"] as const;
 type CodeTab = (typeof CODE_TABS)[number];
 
 // ---------- undo / redo ----------
@@ -871,12 +1341,16 @@ function Designer({
   onExit,
   onShowWiki,
   wikiOpen,
+  theme,
+  onToggleTheme,
 }: {
   project: string; // ชื่อ project บน server — source of truth
   offline: boolean; // true = โหมดออฟไลน์ (localStorage ล้วน ไม่มีระบบ project)
   onExit: () => void; // กลับไปหน้าเลือกโปรเจกต์
   onShowWiki: (name: string) => void; // toggle wiki ข้าง canvas (หน้าเดียวกัน)
   wikiOpen: boolean; // wiki ของโปรเจกต์นี้เปิดอยู่ไหม (ไฮไลต์ปุ่ม)
+  theme: Theme; // ธีมปัจจุบัน — ส่งต่อให้ react flow ด้วย (colorMode)
+  onToggleTheme: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CollectionNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<RelEdge>([]);
@@ -885,6 +1359,7 @@ function Designer({
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [codeOpen, setCodeOpen] = useState(false);
+  const [lintOpen, setLintOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false); // ปุ่ม ? คู่มือบน canvas
   const [navOpen, setNavOpen] = useState(true); // แผงรายชื่อ collection ด้านซ้าย
   const [navQuery, setNavQuery] = useState("");
@@ -902,7 +1377,9 @@ function Designer({
   const knownRev = useRef<number | null>(null); // rev ล่าสุดที่ UI รู้ — ต่างจาก server = มีคนอื่นแก้
   const lastPayload = useRef(""); // payload ล่าสุดที่ server มี — กัน autosave ยิง PUT ซ้ำตอน refresh/โหลด (ไม่งั้น rev ไถลและของที่ AI ลบเด้งกลับ)
   const serverOn = useRef(false); // bootstrap ต่อ server ได้ไหม — ไม่ได้ = โหมด offline (localStorage ล้วน)
-  const { fitView, getViewport, setViewport } = useReactFlow();
+  // PUT เจอ 409 ค้างอยู่ — local มีการแก้ที่ยังไม่ถูก push ห้าม poll เอาของ server มาทับเงียบ (ต้องรอผู้ใช้กดโหลดที่แถบเตือน)
+  const conflict = useRef(false);
+  const { fitView, getViewport, setViewport, getInternalNode } = useReactFlow();
 
   // Ctrl+wheel / Ctrl+ลากซ้าย = scroll/แพนจออิสระ (wheel ธรรมดา = zoom, ลากซ้ายธรรมดา = กรอบเลือก เหมือนเดิม)
   // ทำเองที่ capture phase ของ root — d3-zoom/selection ของ React Flow ไม่ครอบ gesture นี้
@@ -1002,11 +1479,19 @@ function Designer({
     async (payload: string) => {
       if (!serverOn.current) return;
       try {
+        // แนบ rev ที่ถืออยู่ — ถ้ามีคนอื่น (แท็บอื่น/AI ผ่าน MCP) เขียนไปก่อน server จะตอบ 409
+        // แทนที่จะทับงานเขาหายเงียบ
+        const body = JSON.stringify({ ...JSON.parse(payload), expectedRev: knownRev.current });
         const res = await fetch(`/api/projects/${encodeURIComponent(project)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: payload,
+          body,
         });
+        if (res.status === 409) {
+          conflict.current = true; // ระงับ auto refresh — ไม่งั้น poll รอบถัดไปทับการแก้ที่เพิ่งชนหายเงียบใน 3 วิ
+          setExternalEdit(true); // แถบเตือน "มีคนแก้ไปแล้ว — refresh ก่อนแก้ต่อ"
+          return;
+        }
         if (res.ok) {
           const j = await res.json();
           if (typeof j.rev === "number") knownRev.current = j.rev;
@@ -1069,6 +1554,8 @@ function Designer({
   useEffect(() => {
     const t = setInterval(() => {
       if (!serverOn.current || knownRev.current === null) return;
+      // มี conflict (409) ค้าง — local ถือการแก้ที่ server ยังไม่รับ ห้าม auto ทับเงียบ รอผู้ใช้เลือกที่แถบเตือน
+      if (conflict.current) return;
       void (async () => {
         try {
           const res = await fetch(
@@ -1244,9 +1731,12 @@ function Designer({
   const onConnect = useCallback(
     (c: Connection) => {
       if (c.source === c.target) return; // ไม่เชื่อมตัวเอง
+      // handle จริงมี suffix ข้าง (-l/-r) — เก็บ canonical -s/-t เสมอ (ข้างเลือกอัตโนมัติตอน render)
+      const norm = (h?: string | null): string | null => (h == null ? null : h.replace(/(-[st])-[lr]$/, "$1"));
+      const cc: Connection = { ...c, sourceHandle: norm(c.sourceHandle), targetHandle: norm(c.targetHandle) };
       // 1 ฟิลด์ = 1 ref — ลากซ้ำจาก handle เดิม = ย้าย reference (ตรง buildRefMap last-write-wins)
       setEdges((es) =>
-        addEdge(c, es.filter((e) => !(e.source === c.source && e.sourceHandle === c.sourceHandle)))
+        addEdge(cc, es.filter((e) => !(e.source === cc.source && e.sourceHandle === cc.sourceHandle)))
       );
     },
     [setEdges]
@@ -1269,8 +1759,8 @@ function Designer({
             data: { ...rel, ...next },
             animated: !embed,
             style: embed
-              ? { stroke: "#64748b", strokeWidth: 1.5, strokeDasharray: "6 3" }
-              : { stroke: "#64748b", strokeWidth: 1.5 },
+              ? { stroke: "#64748b", strokeWidth: 1.5, strokeDasharray: "6 3", animationDirection: "reverse" }
+              : { stroke: "#64748b", strokeWidth: 1.5, animationDirection: "reverse" },
           };
         })
       );
@@ -1285,65 +1775,118 @@ function Designer({
   const crossNodes = useMemo(() => {
     const curNodes = allDiagrams[cur]?.nodes ?? [];
     const here = new Set(curNodes.map((n) => n.id));
-    const out: CollectionNode[] = [];
+    // dedup ตาม node เป้าหมาย + เก็บทุก field ปลายเส้น (1 node อาจถูกชี้หลาย field)
+    const byTarget = new Map<
+      string,
+      { label: string; tabId: string; tabName: string; handles: Set<string>; src?: CollectionNode }
+    >();
     for (const e of edges) {
       if (here.has(e.target)) continue;
+      const hit = byTarget.get(e.target);
+      if (hit) {
+        if (e.targetHandle) hit.handles.add(e.targetHandle);
+        continue;
+      }
       for (const t of tabs) {
         if (t.id === cur) continue;
         const tn = allDiagrams[t.id]?.nodes.find((n) => n.id === e.target);
         if (!tn) continue;
-        const src = curNodes.find((n) => n.id === e.source);
-        out.push({
-          id: tn.id,
-          type: "collection",
-          position: {
-            x: (src?.position.x ?? 0) + (src?.measured?.width ?? src?.width ?? 288) + 60,
-            y: (src?.position.y ?? 0) + 20,
-          },
-          data: { label: tn.data.label, description: `⇢ อยู่ในแท็บ "${t.name}"`, fields: [] },
-          draggable: false,
-          selectable: false,
-          className: "cross-tab-node",
-        } as CollectionNode);
+        byTarget.set(e.target, {
+          label: tn.data.label,
+          tabId: t.id,
+          tabName: t.name,
+          handles: new Set(e.targetHandle ? [e.targetHandle] : []),
+          src: curNodes.find((n) => n.id === e.source),
+        });
         break;
       }
     }
-    return out;
+    return [...byTarget.entries()].map(
+      ([targetId, v]) =>
+        ({
+          id: targetId,
+          type: "crossref",
+          position: {
+            x: (v.src?.position.x ?? 0) + (v.src?.measured?.width ?? v.src?.width ?? 288) + 60,
+            y: (v.src?.position.y ?? 0) + 20,
+          },
+          data: {
+            label: v.label,
+            description: v.tabName,
+            fields: [],
+            crossTabId: v.tabId,
+            refHandles: [...v.handles],
+          },
+          draggable: false,
+          selectable: false,
+        }) as unknown as CollectionNode
+    );
   }, [edges, tabs, cur, allDiagrams]);
 
   const flowNodes = useMemo(() => [...nodes, ...crossNodes], [nodes, crossNodes]);
 
-  // map targetId → ชื่อ tab (สำหรับป้ายเส้นข้าม tab)
-  const crossTabOf = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const t of tabs) {
-      if (t.id === cur) continue;
-      for (const n of allDiagrams[t.id]?.nodes ?? []) m.set(n.id, t.name);
-    }
-    return m;
-  }, [tabs, cur, allDiagrams]);
-
-  // label เส้น = ชื่อฟิลด์ต้นทาง (+ cardinality) + ชื่อ tab ถ้าข้าม + hover highlight — derive ล้วนตอน render
+  // label เส้น = ชื่อฟิลด์ต้นทาง (+ cardinality) + hover highlight — derive ล้วนตอน render
   const displayEdges = useMemo(() => {
-    const here = new Set(nodes.map((n) => n.id));
+    // ลำดับเส้นต่อการ์ดต้นทาง — เส้นที่ออกจากการ์ดเดียวกันวิ่งขนานกัน ป้ายจึงกองทับ ใช้เลื่อนแยก
+    const laneOf = new Map<string, number>();
     const mapped = edges.map((e) => {
       const src = nodes.find((n) => n.id === e.source);
-      const fid = e.sourceHandle?.replace(/-s$/, "");
+      // auto-side: ทุก field มี handle ซ้าย/ขวา — เลือกข้างที่หันเข้าหากันตามตำแหน่ง node (ลาก node แล้วเส้นสลับข้างเอง ไม่อ้อมหลังการ์ด); ข้อมูลเก็บ canonical -s/-t เสมอ
+      let sh = e.sourceHandle;
+      let th = e.targetHandle;
+      const tgt = nodes.find((n) => n.id === e.target) ?? crossNodes.find((n) => n.id === e.target);
+      if (src && tgt && sh && th) {
+        const scx = src.position.x + (src.measured?.width ?? 360) / 2;
+        const tcx = tgt.position.x + (tgt.measured?.width ?? 360) / 2;
+        const srcLeft = scx >= tcx;
+        sh = `${sh.replace(/-[lr]$/, "")}-${srcLeft ? "l" : "r"}`;
+        th = `${th.replace(/-[lr]$/, "")}-${srcLeft ? "r" : "l"}`;
+      }
+      const fid = e.sourceHandle?.replace(/-s(-[lr])?$/, "");
       const name = src?.data.fields.find((f) => f.id === fid)?.name ?? "";
       const card = e.data?.cardinality ? CARD_LABEL[e.data.cardinality] : "";
-      const cross = here.has(e.target) ? undefined : crossTabOf.get(e.target);
       const base0 = name && card ? `${name} · ${card}` : name || card || "";
-      const labelText = cross ? `${base0} ⇢ ${cross}` : base0;
+      const labelText = base0; // เส้นข้าม tab มี stub node บอกชื่อ tab อยู่แล้ว ไม่ต้องต่อท้ายป้าย
       const label = labelText || undefined;
-      const el = e.label === label ? e : { ...e, label };
-      if (!hoveredId) return el;
-      const base = e.style ?? { stroke: "#64748b", strokeWidth: 1.5 };
+      const el0 = e.label === label ? e : { ...e, label };
+      const el =
+        sh === e.sourceHandle && th === e.targetHandle
+          ? el0
+          : { ...el0, sourceHandle: sh, targetHandle: th };
+      // edge เก่าที่ persist ไว้มี style/markerStart ของตัวเอง (ทำให้ defaultEdgeOptions ไม่ถูกใช้) — merge animationDirection + บังคับ marker orient ทุกเส้นตรงนี้ (วิ่ง/ชี้ แม่→ลูก)
+      const base = { animationDirection: "reverse" as const, stroke: "#64748b", strokeWidth: 1.5, ...e.style };
+      const marker: EdgeMarker = {
+        type: MarkerType.ArrowClosed,
+        color: "#38bdf8",
+        width: 18,
+        height: 18,
+        ...(typeof e.markerStart === "object" ? e.markerStart : {}),
+        orient: "auto-start-reverse",
+      };
+      // persisted edge มี type ของตัวเอง (ชนะ defaultEdgeOptions) — บังคับ "rel" ทุกเส้น ไม่งั้นเส้นเก่าไม่ได้ gap
+      const lane = laneOf.get(e.source) ?? 0;
+      laneOf.set(e.source, lane + 1);
+      const elS = { ...el, type: "rel", style: base, markerStart: marker, data: { ...e.data, lane } };
+      if (!hoveredId) return elS;
       return e.source === hoveredId || e.target === hoveredId
-        ? { ...el, style: { ...base, stroke: "#38bdf8", opacity: 1 } }
-        : { ...el, style: { ...base, opacity: 0.2 } };
+        ? { ...elS, style: { ...base, stroke: "#38bdf8", opacity: 1 } }
+        : { ...elS, style: { ...base, opacity: 0.2 } };
     });
     return mapped;
-  }, [edges, nodes, hoveredId, crossTabOf]);
+  }, [edges, nodes, crossNodes, hoveredId]);
+
+  // ตรวจโมเดลของ diagram ที่เปิดอยู่ (allNodes = node จริงทุกแท็บ เพื่อ resolve ปลายทางของเส้นข้ามแท็บ)
+  // ห้ามใช้ crossNodes แทน — node เสมือนมี fields ว่าง ทำให้ field ปลายทาง resolve ไม่ได้
+  // (fk-type-mismatch ข้าม tab ไม่เคยทำงาน และ dangling-relation จะ false positive)
+  const lintIssues = useMemo(
+    () => lintModel(nodes as unknown as GenNode[], edges as unknown as GenEdge[], [
+      ...(nodes as unknown as GenNode[]),
+      ...Object.entries(allDiagrams)
+        .filter(([id]) => id !== cur)
+        .flatMap(([, d]) => d.nodes as unknown as GenNode[]),
+    ]),
+    [nodes, edges, allDiagrams, cur],
+  );
 
   // คีย์ลัด: Ctrl+D ทำซ้ำ node ที่เลือก, Ctrl+K โฟกัสค้นหา, Esc ปิดค้นหา/modal
   useEffect(() => {
@@ -1402,25 +1945,45 @@ function Designer({
     fitView({ nodes: [{ id: nid }], duration: 300, maxZoom: 1.2 });
   };
 
+  // ขนาดจริงของการ์ด — `n.measured` ใน controlled state ไม่ sync กลับจาก React Flow เสมอไป
+  // (เจอ undefined ทั้งที่การ์ด render แล้ว) จึงอ่านจาก internal store ซึ่งเป็นแหล่งเดียวกับที่
+  // React Flow ใช้วาดจริงก่อน แล้วค่อย fallback ค่าใน state / ค่า default
+  const sizeOf = (n: CollectionNode) => {
+    const m = getInternalNode(n.id)?.measured;
+    return {
+      w: m?.width ?? n.measured?.width ?? n.width ?? 288,
+      h: m?.height ?? n.measured?.height ?? 240,
+    };
+  };
+
   const addCollection = () =>
-    setNodes((ns) => [
-      ...ns,
-      {
-        id: uid(),
-        type: "collection",
-        position: { x: 120 + ns.length * 40, y: 120 + ns.length * 40 },
-        data: {
-          label: `collection_${ns.length + 1}`,
-          fields: [{ id: uid(), name: "_id", type: "ObjectId" as FieldType, required: true }],
+    setNodes((ns) => {
+      // วางใต้การ์ดที่อยู่ล่างสุดตามความสูงจริง — สูตร index*40 เดิมโดนการ์ดสูงๆ ทับจนมองไม่เห็น/กดไม่ได้
+      const bottom = ns.reduce((m, n) => Math.max(m, n.position.y + sizeOf(n).h), 80);
+      return [
+        ...ns,
+        {
+          id: uid(),
+          type: "collection",
+          position: { x: 120, y: bottom + 40 },
+          data: {
+            label: `collection_${ns.length + 1}`,
+            fields: [{ id: uid(), name: "_id", type: "ObjectId" as FieldType, required: true }],
+          },
         },
-      },
-    ]);
+      ];
+    });
 
   // จัดผังอัตโนมัติ (hybrid):
   // 1) กลุ่มที่มีเส้นเชื่อม → ELK layered (master ซ้าย → transaction ขวา, ลดเส้นตัด)
   // 2) node เดี่ยวไม่มีเส้น → grid √n คอลัมน์ขวาสุด (ELK ล้วนกระจายเป็นหลายกม. — เคสนี้ grid ดีกว่า)
   const autoLayout = async () => {
-    const realEdges = edges.filter((e) => e.source !== e.target);
+    // เฉพาะเส้นที่ปลายทั้งสองอยู่ใน tab นี้ — เส้นข้าม tab ชี้ node ที่ไม่มีใน children ทำให้ ELK throw
+    // (JsonImportException: Referenced shape does not exist) แล้วจัดผังล้มเงียบทั้งฟังก์ชัน
+    const nodeIds = new Set(nodes.map((n) => n.id));
+    const realEdges = edges.filter(
+      (e) => e.source !== e.target && nodeIds.has(e.source) && nodeIds.has(e.target)
+    );
     const linked = new Set<string>();
     realEdges.forEach((e) => {
       linked.add(e.source);
@@ -1428,10 +1991,6 @@ function Designer({
     });
     const linkedNodes = nodes.filter((n) => linked.has(n.id));
     const isolatedNodes = nodes.filter((n) => !linked.has(n.id));
-    const sizeOf = (n: CollectionNode) => ({
-      w: n.measured?.width ?? n.width ?? 288,
-      h: n.measured?.height ?? 240,
-    });
 
     const pos = new Map<string, { x: number; y: number }>();
     let gridX0 = 40;
@@ -1558,14 +2117,16 @@ function Designer({
     }));
     return codeTab === "mongosh"
       ? toMongosh(gn, ge, allGn)
-      : codeTab === "Mongoose"
+      : codeTab === "Go"
+        ? toGo(gn, ge)
+        : codeTab === "Mongoose"
         ? toMongoose(gn, ge, allGn)
         : codeTab === "TypeScript"
           ? toTypeScript(gn, ge)
           : codeTab === "Markdown"
             ? toMarkdown(gn, ge, allGn)
             : codeTab === "Wiki"
-              ? Object.entries(toWiki(gn, ge, project))
+              ? Object.entries(toWiki(gn, ge, project, allGn))
                   .map(([f, c]) => `### 📄 ${f}\n\n${c}`)
                   .join("\n\n---\n\n")
               : codeTab === "ตัวอย่าง"
@@ -1576,34 +2137,34 @@ function Designer({
   return (
     <div className="flex h-screen flex-col bg-slate-950">
       {/* แถบเครื่องมือ */}
-      <header className="flex items-center gap-3 border-b border-slate-800 bg-slate-900 px-4 py-2">
+      <header className="mm-bar flex items-center gap-3 px-4 py-2.5">
         <button
-          className="rounded-md px-2 py-1 text-sm text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+          className="mm-btn border-transparent bg-transparent px-2"
           title="กลับไปหน้าเลือกโปรเจกต์"
           onClick={onExit}
         >
           ←
         </button>
-        <span className="h-3 w-3 rounded-full bg-emerald-500" />
-        <h1 className="font-bold text-slate-100">MongoModel</h1>
-        <span className="max-w-48 truncate rounded-full border border-sky-800 bg-sky-950 px-2.5 py-0.5 text-xs text-sky-300">
+        <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-400 shadow-[0_0_10px_2px_rgba(52,211,153,0.5)]" />
+        <h1 className="shrink-0 text-[15px] font-semibold tracking-tight text-slate-50">MongoModel</h1>
+        <span className="max-w-48 shrink-0 truncate rounded-full border border-sky-500/30 bg-sky-500/10 px-2.5 py-0.5 text-xs font-medium text-sky-300">
           {project}
         </span>
-        <span className="hidden text-xs text-slate-500 sm:block">
+        <span className="hidden shrink-0 whitespace-nowrap text-xs text-slate-500 xl:block">
           ออกแบบโครงสร้างข้อมูล MongoDB
         </span>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="mm-toolbar ml-auto flex min-w-0 items-center gap-2 overflow-x-auto">
           {/* ค้นหา + ซูมไปหา */}
           <div className="relative">
             <input
               ref={searchInput}
-              className="w-44 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-sky-500"
+              className="mm-input w-44"
               placeholder="🔍 ค้นหา (Ctrl+K)"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
             {query.trim() !== "" && (
-              <div className="absolute left-0 top-full z-50 mt-1 max-h-64 w-64 overflow-auto rounded-lg border border-slate-700 bg-slate-900 shadow-xl">
+              <div className="mm-panel absolute left-0 top-full z-50 mt-1.5 max-h-64 w-64 overflow-auto">
                 {searchResults.length ? (
                   searchResults.map((n) => (
                     <button
@@ -1622,7 +2183,7 @@ function Designer({
             )}
           </div>
           <button
-            className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-sm text-slate-300 hover:bg-slate-800 disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent"
+            className="mm-btn px-2.5"
             title="ย้อนกลับ (Ctrl+Z)"
             disabled={!histSizes.past}
             onClick={undo}
@@ -1630,7 +2191,7 @@ function Designer({
             ↶
           </button>
           <button
-            className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-sm text-slate-300 hover:bg-slate-800 disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent"
+            className="mm-btn px-2.5"
             title="ทำซ้ำ (Ctrl+Y / Ctrl+Shift+Z)"
             disabled={!histSizes.future}
             onClick={redo}
@@ -1638,30 +2199,33 @@ function Designer({
             ↷
           </button>
           <button
-            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500"
+            className="mm-btn mm-btn-accent"
             onClick={addCollection}
           >
             ＋ เพิ่มคอลเลกชัน
           </button>
           <button
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+            className="mm-btn"
             title="จัดเรียง node อัตโนมัติ ไม่ให้ทับกัน"
             onClick={() => void autoLayout()}
           >
             ▦ จัดผัง
           </button>
           <button
-            className="rounded-lg bg-sky-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-600"
+            className="mm-btn mm-btn-primary"
             onClick={() => setCodeOpen(true)}
           >
             ⚙️ สร้างโค้ด
           </button>
           <button
-            className={`rounded-lg border px-3 py-1.5 text-sm transition-colors ${
-              wikiOpen
-                ? "border-sky-600 bg-sky-950 text-sky-300"
-                : "border-slate-700 text-slate-300 hover:bg-slate-800"
-            }`}
+            className={`mm-btn ${lintIssues.length ? "border-amber-500/40 text-amber-300" : ""}`}
+            title="ตรวจโมเดลด้วยกฎที่เครื่องจับได้ (ฟิลด์เงิน, unique, FK, tenant scope, array)"
+            onClick={() => setLintOpen(true)}
+          >
+            🩺 ตรวจ{lintIssues.length > 0 ? ` (${lintIssues.length})` : ""}
+          </button>
+          <button
+            className={`mm-btn ${wikiOpen ? "mm-btn-on" : ""}`}
             title="เปิด/ปิด wiki แบบ Obsidian ข้าง canvas (หน้าเดียวกัน)"
             onClick={() => onShowWiki(project)}
           >
@@ -1669,22 +2233,26 @@ function Designer({
           </button>
           <button
             className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+            title="นำเข้าไฟล์ JSON เพิ่มเป็นแท็บใหม่ในโปรเจกต์นี้ (ไม่ทับงานเดิม)"
             onClick={() => fileInput.current?.click()}
           >
-            📥 นำเข้า
+            📥 <span className="hidden 2xl:inline">นำเข้า</span>
           </button>
           <button
             className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+            title="ส่งออก project นี้เป็นไฟล์ JSON"
             onClick={exportJson}
           >
-            📤 ส่งออก
+            📤 <span className="hidden 2xl:inline">ส่งออก</span>
           </button>
           <button
             className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+            title="สำรองทุก project เป็นไฟล์เดียว"
             onClick={backupAll}
           >
-            💾 สำรองทั้งหมด
+            💾 <span className="hidden 2xl:inline">สำรองทั้งหมด</span>
           </button>
+          <ThemeButton theme={theme} onToggle={onToggleTheme} />
         </div>
         <input
           ref={fileInput}
@@ -1716,8 +2284,20 @@ function Designer({
       {externalEdit && (
         <div className="flex items-center gap-2 border-b border-yellow-900 bg-yellow-950 px-4 py-1.5 text-xs text-yellow-300">
           <span className="flex-1">
-            diagram อาจถูกแก้จาก AI (ผ่าน MCP) หรือแท็บอื่น — refresh ก่อนแก้ต่อเพื่อกันงานทับกัน
+            diagram อาจถูกแก้จาก AI (ผ่าน MCP) หรือแท็บอื่น — โหลดจาก server ก่อนแก้ต่อเพื่อกันงานทับกัน
           </span>
+          {/* การแก้ที่ชน (409) ไม่ถูก auto ทับ — ทับได้เฉพาะเมื่อผู้ใช้กดปุ่มนี้เอง */}
+          <button
+            className="shrink-0 rounded border border-yellow-700 px-2 py-0.5 hover:text-yellow-100"
+            title="โหลดข้อมูลล่าสุดจาก server มาแทน (การแก้ในเครื่องที่ชนกันจะถูกทิ้ง)"
+            onClick={() => {
+              conflict.current = false;
+              setExternalEdit(false);
+              void bootstrap();
+            }}
+          >
+            🔄 โหลดจาก server
+          </button>
           <button
             className="shrink-0 hover:text-yellow-100"
             title="ปิดแถบเตือน"
@@ -1729,15 +2309,11 @@ function Designer({
       )}
 
       {/* แท็บ diagram — save/load ในเครื่อง */}
-      <div className="flex items-end gap-1 border-b border-slate-800 bg-slate-900 px-3 pt-1.5">
+      <div className="mm-bar flex items-end gap-1 px-3 pt-2">
         {tabs.map((t, ti) => (
           <div
             key={t.id}
-            className={`group flex cursor-pointer items-center gap-1.5 rounded-t-md border border-b-0 px-3 py-1.5 text-sm ${
-              t.id === cur
-                ? "border-slate-700 bg-slate-950 text-slate-100"
-                : "border-transparent bg-slate-800/60 text-slate-400 hover:bg-slate-800"
-            }`}
+            className={`mm-tab group flex cursor-pointer items-center gap-1.5 px-3.5 py-2 text-sm ${t.id === cur ? "mm-tab-active" : ""}`}
             onClick={() => switchTab(t.id)}
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => {
@@ -1794,14 +2370,19 @@ function Designer({
       {/* กระดานออกแบบ */}
       <div className="flex-1">
         <ReactFlow
-          colorMode="dark"
+          colorMode={theme}
           nodes={flowNodes}
           edges={displayEdges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onEdgeDoubleClick={onEdgeDoubleClick}
+          onNodeClick={(_, n) => {
+            // stub ปลายทางเส้นข้าม tab — กดแล้วข้ามไป tab นั้น
+            if ((n.type as string) === "crossref" && n.data.crossTabId) openDiagram(n.data.crossTabId);
+          }}
           onBeforeDelete={async ({ nodes: del }) => {
             // คอลเลกชันที่มีงานจริง (>1 ฟิลด์) ต้อง confirm ก่อนลบ — ครอบทั้งปุ่ม ✕ และ Delete key
             const big = del.find((n) => n.data.fields.length > 1);
@@ -1814,15 +2395,16 @@ function Designer({
           snapGrid={[20, 20]}
           selectionOnDrag
           panOnDrag={[1, 2]}
+          // 48 (ค่าเดิม) กว้างกว่าระยะระหว่าง handle เอง — source กับ target ของ field เดียวกันห่างแค่ 14px
+          // และแถวถัดไปห่าง ~39px จึงคว้า handle ตัวอื่นแทนตัวที่กด (เส้นออกผิดจุด) 10 = แคบกว่าครึ่งของ 14
+          connectionRadius={10}
           defaultEdgeOptions={{
-            type: "default",
+            type: "rel",
             animated: true,
-            style: { stroke: "#64748b", strokeWidth: 1.5 },
-            markerEnd: { type: MarkerType.ArrowClosed, color: "#64748b" },
-            labelStyle: { fill: "#94a3b8", fontSize: 11 },
-            labelBgStyle: { fill: "#0f172a", fillOpacity: 0.9 },
-            labelBgPadding: [4, 2],
-            labelBgBorderRadius: 4,
+            // dash animation วิ่งตาม path (ลูก→แม่) ผิดทิศความหมาย — inline animationDirection reverse ให้วิ่งแม่→ลูก (inline ชนะ animation shorthand จาก stylesheet เสมอ ไม่พึ่ง globals.css; onEdgeDoubleClick ต้องใส่ค่านี้ทุก style ด้วย)
+            style: { stroke: "#64748b", strokeWidth: 1.5, animationDirection: "reverse" },
+            // ทิศลูกศร: แม่(master/key=target) → ลูก(FK=source) — markerStart อยู่ปลายฝั่งลูก + orient auto-start-reverse ให้หัวลูกศรชี้เข้าหาลูก (default auto จะชี้ออก = กลับทิศ)
+            markerStart: { type: MarkerType.ArrowClosed, color: "#38bdf8", width: 20, height: 20, orient: "auto-start-reverse" },
           }}
           fitView
         >
@@ -1831,7 +2413,7 @@ function Designer({
           <MiniMap nodeColor="#1e40af" maskColor="rgba(2,6,23,0.75)" pannable zoomable />
           {/* แผงรายชื่อ collection ด้านซ้าย — กดแล้วกระโดดไปหา node เลย */}
           <Panel position="top-left">
-            <div className="w-52 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/90 shadow">
+            <div className="mm-panel w-52 overflow-hidden">
               <button
                 className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-xs font-semibold text-slate-300 hover:text-slate-100"
                 title="พับ/ขยายรายชื่อ collection"
@@ -1847,7 +2429,7 @@ function Designer({
                   {nodes.length > 6 && (
                     <div className="px-2 pb-1">
                       <input
-                        className="w-full rounded border border-slate-700 bg-slate-800 px-1.5 py-1 text-[11px] text-slate-200 outline-none placeholder:text-slate-500 focus:border-sky-500"
+                        className="mm-input w-full px-2 py-1 text-[11px]"
                         placeholder="กรองชื่อ/คำอธิบาย…"
                         value={navQuery}
                         onChange={(e) => setNavQuery(e.target.value)}
@@ -1939,6 +2521,59 @@ function Designer({
       </div>
 
       {/* ศูนย์ส่งออกโค้ด */}
+      {lintOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+          onClick={() => setLintOpen(false)}
+        >
+          <div
+            className="mm-panel flex h-full max-h-[70vh] w-full max-w-3xl flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 border-b border-white/10 px-4 py-2.5">
+              <span className="text-sm font-semibold text-slate-200">🩺 ตรวจโมเดล</span>
+              <span className="text-xs text-slate-500">
+                {lintIssues.length === 0
+                  ? "ไม่พบปัญหา"
+                  : `${lintIssues.filter((i) => i.level === "error").length} ต้องแก้ · ${lintIssues.filter((i) => i.level === "warn").length} ควรทบทวน`}
+              </span>
+              <button className="mm-btn ml-auto px-2" onClick={() => setLintOpen(false)}>
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-3">
+              {lintIssues.length === 0 ? (
+                <div className="p-8 text-center text-sm text-slate-500">
+                  ผังนี้ผ่านกฎทั้งหมด 👍
+                </div>
+              ) : (
+                <table className="w-full text-xs">
+                  <tbody>
+                    {[...lintIssues]
+                      .sort((a, b) => (a.level === b.level ? 0 : a.level === "error" ? -1 : 1))
+                      .map((i, n) => (
+                        <tr key={n} className="border-b border-white/5 align-top">
+                          <td className="whitespace-nowrap py-1.5 pr-2">
+                            <span className={i.level === "error" ? "text-red-400" : "text-amber-400"}>
+                              {i.level === "error" ? "●" : "○"}
+                            </span>
+                          </td>
+                          <td className="whitespace-nowrap py-1.5 pr-3 font-medium text-slate-200">
+                            {i.collection}
+                            {i.field ? <span className="text-slate-400">.{i.field}</span> : null}
+                          </td>
+                          <td className="py-1.5 pr-3 text-slate-300">{i.message}</td>
+                          <td className="whitespace-nowrap py-1.5 text-[10px] text-slate-500">{i.rule}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {codeOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
@@ -2013,10 +2648,14 @@ function ProjectHome({
   onOpen,
   onOffline,
   onShowWiki,
+  theme,
+  onToggleTheme,
 }: {
   onOpen: (name: string) => void;
   onOffline: () => void;
   onShowWiki: (name: string) => void;
+  theme: Theme;
+  onToggleTheme: () => void;
 }) {
   const [list, setList] = useState<ProjectSummary[] | null>(null);
   const [offline, setOffline] = useState(false);
@@ -2151,8 +2790,11 @@ function ProjectHome({
       <div className="w-full max-w-2xl">
         <div className="mb-6 flex items-center gap-3">
           <span className="h-3 w-3 rounded-full bg-emerald-500" />
-          <h1 className="text-xl font-bold text-slate-100">MongoModel</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-50">MongoModel</h1>
           <span className="text-xs text-slate-500">ออกแบบโครงสร้างข้อมูล MongoDB</span>
+          <div className="ml-auto">
+            <ThemeButton theme={theme} onToggle={onToggleTheme} />
+          </div>
         </div>
 
         {offline ? (
@@ -2177,20 +2819,20 @@ function ProjectHome({
           <>
             <div className="mb-4 flex gap-2">
               <input
-                className="flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-500 focus:border-sky-500"
+                className="mm-input flex-1 px-3.5 py-2.5 text-sm"
                 placeholder="ชื่อโปรเจกต์ใหม่…"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void create()}
               />
               <button
-                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500"
+                className="mm-btn mm-btn-primary px-4 py-2.5"
                 onClick={() => void create()}
               >
                 ＋ สร้างโปรเจกต์
               </button>
               <button
-                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+                className="mm-btn px-4 py-2.5"
                 title="นำเข้าไฟล์ JSON (ส่งออก/สำรองจาก MongoModel) เป็น project ใหม่"
                 onClick={() => importInput.current?.click()}
               >
@@ -2213,7 +2855,7 @@ function ProjectHome({
             {list === null ? (
               <div className="text-sm text-slate-500">กำลังโหลด…</div>
             ) : list.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-slate-700 p-8 text-center text-sm text-slate-500">
+              <div className="rounded-xl border border-dashed border-white/12 bg-white/[0.02] p-10 text-center text-sm text-slate-500">
                 ยังไม่มีโปรเจกต์ — สร้างอันแรกจากช่องด้านบน หรือนำเข้าไฟล์ (เช่น erp-example.json)
               </div>
             ) : (
@@ -2221,7 +2863,7 @@ function ProjectHome({
                 {list.map((p) => (
                   <div
                     key={p.name}
-                    className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-900 px-4 py-3 hover:border-sky-700"
+                    className="mm-panel flex items-center gap-3 px-4 py-3.5 transition-colors hover:border-sky-500/40"
                   >
                     {renaming === p.name ? (
                       <input
@@ -2347,6 +2989,7 @@ function WikiOverlay({
 }
 
 function App() {
+  const [theme, toggleTheme] = useTheme();
   const [project, setProject] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [wiki, setWiki] = useState<string | null>(null); // โปรเจกต์ที่เปิด wiki อยู่
@@ -2370,10 +3013,12 @@ function App() {
               onExit={() => setOffline(false)}
               onShowWiki={toggleWiki}
               wikiOpen={false}
+              theme={theme}
+              onToggleTheme={toggleTheme}
             />
           </ReactFlowProvider>
         ) : project === null ? (
-          <ProjectHome onOpen={openProject} onOffline={() => setOffline(true)} onShowWiki={toggleWiki} />
+          <ProjectHome onOpen={openProject} onOffline={() => setOffline(true)} onShowWiki={toggleWiki} theme={theme} onToggleTheme={toggleTheme} />
         ) : (
           // key=project → สลับโปรเจกต์ = remount สะอาด
           <ReactFlowProvider key={project}>
@@ -2383,6 +3028,8 @@ function App() {
               onExit={() => setProject(null)}
               onShowWiki={toggleWiki}
               wikiOpen={wiki === project}
+              theme={theme}
+              onToggleTheme={toggleTheme}
             />
           </ReactFlowProvider>
         )}

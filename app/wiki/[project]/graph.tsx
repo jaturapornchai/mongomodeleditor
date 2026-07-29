@@ -124,13 +124,14 @@ export default function WikiGraph({
       animated: e.kind === "reference",
       style:
         e.kind === "reference"
-          ? { stroke: "#38bdf8", strokeWidth: 1.6 }
+          ? { stroke: "#38bdf8", strokeWidth: 1.6, animationDirection: "reverse" } // animated — กลับทิศ dash ให้วิ่งแม่→ลูก (ดู designer)
           : e.kind === "embed"
             ? { stroke: "#64748b", strokeWidth: 1.4, strokeDasharray: "6 3" }
             : { stroke: "#8b5cf6", strokeWidth: 1, opacity: 0.55 },
       labelStyle: { fill: "#94a3b8", fontSize: 10 },
       labelBgStyle: { fill: "#0f172a", fillOpacity: 0.9 },
-      markerEnd: e.kind !== "contain" ? { type: MarkerType.ArrowClosed, color: e.kind === "embed" ? "#64748b" : "#38bdf8" } : undefined,
+      // ทิศเดียวกับ designer: แม่(target) → ลูก(source) — markerStart ปลายฝั่งลูก + auto-start-reverse ให้หัวลูกศรชี้เข้าหาลูก
+      markerStart: e.kind !== "contain" ? { type: MarkerType.ArrowClosed, color: e.kind === "embed" ? "#64748b" : "#38bdf8", orient: "auto-start-reverse" } : undefined,
     }));
     return { nodes, edges };
   }, [gNodes, gEdges]);
