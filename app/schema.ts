@@ -552,8 +552,15 @@ export function toMongoose(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNod
     lines.push(`const ${schemaVar} = new mongoose.Schema({`);
     for (const field of fields) {
       if (field.name === "_id") continue; // Mongoose ใส่ _id ให้เอง
-      const ref =
-        field.type === "ObjectId" ? refs.get(refKey(node.id, field.id)) : undefined;
+      const target = refs.get(refKey(node.id, field.id));
+      // ref: ใส่เฉพาะ ObjectId (populate ได้จริง) — FK ที่เป็น business key (String ฯลฯ)
+      // populate ตรงๆ ไม่ได้ แต่ความสัมพันธ์ต้องไม่หายจากโค้ด → บอกไว้ในคอมเมนต์เสมอ
+      const ref = field.type === "ObjectId" ? target : undefined;
+      // คอมเมนต์เหนือ field: คำอธิบายไทย (แอปบังคับให้เขียน — ห้ามหายตอน gen) + ปลายทางอ้างอิง
+      const notes: string[] = [];
+      if (field.description) notes.push(oneLine(field.description));
+      if (target !== undefined) notes.push(`→ อ้างอิงถึง ${oneLine(target)}`);
+      if (notes.length) lines.push(`  // ${notes.join(" · ")}`);
       lines.push(`  ${quoteKey(field.name)}: ${mongooseValue(field, ref, "  ")},`);
     }
     lines.push("});");
@@ -607,8 +614,9 @@ function tsType(field: Field, indent: string): string {
   return TS_TYPES[field.type];
 }
 
-export function toTypeScript(nodes: GenNode[], edges: GenEdge[]): string {
-  void edges;
+export function toTypeScript(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode[]): string {
+  // embed ไม่ใช่ foreign key — ไม่ใส่คอมเมนต์อ้างอิง (ตรงกับ toMongosh/toMongoose)
+  const refs = buildRefMap(nodes, edges.filter((e) => e.data?.kind !== "embed"), allNodes);
   return nodes
     .map((node) => {
       const { fields, skipped } = dedupeFields(node.data.fields);
@@ -616,7 +624,12 @@ export function toTypeScript(nodes: GenNode[], edges: GenEdge[]): string {
       if (skipped.length > 0) lines.push(dupWarning(skipped));
       lines.push(`export interface ${pascalCase(collectionLabel(node))} {`);
       for (const field of fields) {
-        if (field.description) lines.push(`  // ${oneLine(field.description)}`);
+        // คอมเมนต์: คำอธิบายไทย + ปลายทางอ้างอิง (เส้นที่ลากไว้ต้องเห็นในโค้ดด้วย ไม่ใช่แค่ Markdown)
+        const target = refs.get(refKey(node.id, field.id));
+        const notes: string[] = [];
+        if (field.description) notes.push(oneLine(field.description));
+        if (target !== undefined) notes.push(`→ อ้างอิงถึง ${oneLine(target)}`);
+        if (notes.length) lines.push(`  // ${notes.join(" · ")}`);
         const optional = !field.required && field.name !== "_id" ? "?" : "";
         lines.push(`  ${quoteKey(field.name)}${optional}: ${tsType(field, "  ")};`);
       }
@@ -1108,6 +1121,17 @@ export function lintModel(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
       continue;
     }
     targetField.set(`${e.source}:${srcFieldId}`, { node: tgtNode, field: tf });
+    // กฎห้ามอ้าง guidfixed (AGENTS.md): guidfixed เป็น identity ภายในเครื่อง ไม่ถูกพกพาตอน
+    // export/import — relation ที่ชี้ไปหามันพังทันทีที่ย้ายข้อมูล ต้องชี้ business key แทน
+    if (tf.name.toLowerCase() === "guidfixed") {
+      issues.push({
+        rule: "relation-to-guidfixed",
+        level: "error",
+        collection: collectionLabel(srcNode),
+        field: srcField.name,
+        message: `เส้นอ้างอิงชี้ไปที่ ${collectionLabel(tgtNode)}.${tf.name} ซึ่งเป็น identity ภายในเครื่อง (ไม่ถูกย้ายตอน export/import — ความสัมพันธ์จะพังหลังย้ายข้อมูล) ให้ชี้ business key ของฝั่งแม่แทน เช่น code`,
+      });
+    }
   }
 
   for (const node of nodes) {
@@ -1137,12 +1161,13 @@ export function lintModel(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
     }
 
     // 1) collection ที่อ้างอิงคนอื่นแต่ไม่มี tenant scope — index จะไม่ถูก scope ตามผู้เช่า
+    // ข้อความต้องอ่านรู้เรื่องโดยไม่ต้องรู้ศัพท์ FK/tenant — ผู้ใช้ทั่วไป (ร้านเดี่ยว) ต้องรู้ว่าข้ามได้
     if (fkFields.length > 0 && !hasSession) {
       add({
         rule: "no-session-key",
         level: "warn",
         collection: label,
-        message: `มี FK ${fkFields.length} ตัวแต่ไม่มี field ที่ทำเครื่องหมาย 🌐 session key — index ที่ gen จะไม่ถูก scope ตามผู้เช่า`,
+        message: `มีฟิลด์ที่อ้างอิงถึง collection อื่น ${fkFields.length} จุด แต่ยังไม่มีฟิลด์ที่ติดเครื่องหมาย 🌐 (ฟิลด์แบ่งขอบเขตข้อมูลเมื่อหลายร้าน/หลายบริษัทใช้ระบบเดียวกัน เช่น holdingcode) — ถ้าระบบนี้ใช้กับร้าน/บริษัทเดียว ข้ามคำเตือนนี้ได้เลย`,
       });
     }
 
@@ -1185,6 +1210,16 @@ export function lintModel(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
           collection: label,
           field: path,
           message: "ฟิลด์จำนวนเงินควรเป็น Decimal128 — Number คือ floating point ปัดเศษเพี้ยนเวลาบวกลบ",
+        });
+      }
+      // 2.5) business key (🔑) ที่ไม่ required — ปล่อยว่างได้ = หลายเอกสารไม่มีค่า key แล้วอ้างอิงหากันไม่เจอ
+      if (f.key && !f.required) {
+        add({
+          rule: "key-not-required",
+          level: "warn",
+          collection: label,
+          field: path,
+          message: "ฟิลด์ที่เป็น 🔑 key (ให้ collection อื่นอ้างอิง) ควรติ๊ก * บังคับกรอกด้วย — ถ้าปล่อยว่างได้ เอกสารที่ไม่มีค่านี้จะถูกอ้างอิงหาไม่เจอ",
         });
       }
       // 3) unique บนฟิลด์ที่ไม่ required — เอกสารที่ไม่มีฟิลด์นี้จะชนกันที่ค่า null
@@ -1432,6 +1467,29 @@ export function demo(): void {
     "mongosh unique index",
   );
   check(mongosh.includes("// → customers"), "mongosh ref index");
+  // ความสัมพันธ์ต้องเห็นในโค้ดที่ copy ไปใช้จริงด้วย (ไม่ใช่แค่ Markdown) — comment เหนือ field
+  check(mongoose.includes("→ อ้างอิงถึง shops"), "mongoose ref comment (FK ที่ไม่ใช่ ObjectId)");
+  check(mongoose.includes("// ยอดรวม"), "mongoose description comment");
+  check(ts.includes("→ อ้างอิงถึง customers"), "ts ref comment");
+  // 🔑 key ที่ไม่ required ต้องถูกเตือน (ค่าว่างหลายแถว = อ้างอิงหาไม่เจอ)
+  check(
+    lintModel(
+      [{ id: "k", data: { label: "kc", fields: [{ id: "k1", name: "code", type: "String", required: false, key: true }] } }],
+      [],
+    ).some((i) => i.rule === "key-not-required"),
+    "key ที่ไม่ required ต้องถูกเตือน",
+  );
+  // relation ชี้ guidfixed ต้องถูกจับเป็น error (identity ภายใน ไม่พกพาข้ามเครื่อง)
+  check(
+    lintModel(
+      [
+        { id: "ga", data: { label: "child", fields: [{ id: "gf1", name: "ordercode", type: "String", required: true }] } },
+        { id: "gb", data: { label: "parent", fields: [{ id: "gf2", name: "guidfixed", type: "String", required: true }] } },
+      ],
+      [{ source: "ga", sourceHandle: "gf1-s", target: "gb", targetHandle: "gf2-t" }],
+    ).some((i) => i.rule === "relation-to-guidfixed"),
+    "relation ที่ชี้ guidfixed ต้องถูกจับ",
+  );
   // key ผสม → compound unique index (mongosh + mongoose)
   check(
     mongosh.includes('db.orders.createIndex({ "shopcode": 1, "docno": 1 }, { unique: true }); // key ผสม (ห้ามซ้ำ): shopcode + docno'),

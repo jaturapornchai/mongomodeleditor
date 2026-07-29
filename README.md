@@ -1,6 +1,6 @@
 # MongoModel — เครื่องมือออกแบบ Data Model ของ MongoDB
 
-**ออกแบบโครงสร้างข้อมูล MongoDB บน canvas แบบลากวาง** — เชื่อมความสัมพันธ์ระหว่างคอลเลกชัน, ใส่รายละเอียดฟิลด์, แล้ว **ส่งออกเป็นโค้ดใช้งานจริง** (mongosh / Mongoose / TypeScript) ได้ทันที ธีมมืดสไตล์ DataGrip เน้นภาษาไทย ทำงานในเบราว์เซอร์ล้วน **ไม่ต้องต่อฐานข้อมูลจริง**
+**ออกแบบโครงสร้างข้อมูล MongoDB บน canvas แบบลากวาง** — เชื่อมความสัมพันธ์ระหว่างคอลเลกชัน, ใส่รายละเอียดฟิลด์, แล้ว **ส่งออกเป็นโค้ดใช้งานจริง** (mongosh / Go / Mongoose / TypeScript) ได้ทันที ธีมมืดสไตล์ DataGrip เน้นภาษาไทย ทำงานในเบราว์เซอร์ล้วน **ไม่ต้องต่อฐานข้อมูลจริง**
 
 ![ภาพตัวอย่าง MongoModel](docs/preview.png)
 
@@ -8,13 +8,13 @@
 
 ## 🤖 โปรเจกต์นี้สร้างด้วย AI ทั้งหมด
 
-โค้ดทุกบรรทัดในโปรเจกต์นี้เขียนโดย **[Claude Code](https://claude.com/claude-code)** (โมเดล **Claude Opus 4.8** เป็นผู้ควบคุม) ผ่านกระบวนการ **multi-agent orchestration**:
+โค้ดทุกบรรทัดในโปรเจกต์นี้เขียนโดย **[Claude Code](https://claude.com/claude-code)** ผ่านกระบวนการ **multi-agent orchestration** — Claude 3 โมเดลแบ่งหน้าที่กัน:
 
-- 🧠 **Opus 4.8** — วางแผน ตัดสินใจ ควบคุมงาน และรีวิวโค้ด
-- ⚡ **Fable** — ลงมือเขียนโค้ดส่วนที่ยาก (implementation, codegen, algorithm)
+- 🧠 **Opus** — วางแผน แตกงาน มอบหมาย รีวิวผลทุกสาย และตัดสินใจขั้นสุดท้าย
+- ⚡ **Fable** — ลงมือเขียนโค้ด (implementation, codegen, MCP, algorithm)
 - 🔍 **Sonnet** — ทดสอบแบบ end-to-end ด้วย Playwright (UAT, regression)
 
-ทุกฟีเจอร์ผ่านวงจร **ค้นหา → ออกแบบ → เขียน (ขนานหลาย agent) → ทดสอบจริงในเบราว์เซอร์ → แก้บั๊กวนจนผ่าน** โดยตรวจ `tsc` + `build` + Playwright ทุกครั้งก่อนถือว่าเสร็จ
+ทุกฟีเจอร์ผ่านวงจร **ออกแบบ → เขียน (ขนานหลายสาย) → playtest จริงหลายสายพร้อมกัน (UI / MCP / wiki) → แก้บั๊กวนจนผ่าน** โดยตรวจ `tsc` + `build` + Playwright ทุกครั้งก่อนถือว่าเสร็จ
 
 > 💡 **เอาไปต่อยอดได้เลย** — โครงสร้างโค้ดแยกส่วนชัดเจน (ดูหัวข้อ [การพัฒนาต่อ](#-การพัฒนาต่อ-ต่อยอด)) เพิ่มชนิดข้อมูล เพิ่มรูปแบบ export หรือเพิ่มฟีเจอร์ canvas ได้ไม่ยาก fork ไปใช้/ดัดแปลงได้ตามสะดวก
 
@@ -26,12 +26,15 @@
 - ลากวาง node บน canvas, **ลากขอบขวาปรับความกว้างได้** (จำค่าถาวร)
 - แก้ชื่อแบบ inline (ดับเบิลคลิกที่หัว), ทำซ้ำ (Ctrl+D / ปุ่ม ⧉), ลบ (มียืนยันถ้ามีฟิลด์)
 - ใส่คำอธิบายคอลเลกชัน (แสดง inline ใต้หัว)
+- **แถบ key ใต้หัวการ์ด** — สรุป key ทั้งหมดของคอลเลกชัน (PK / 🔑 / 🌐 / ⛓ key ผสม) จุดลากเส้นของ key อยู่ที่แถบนี้ พร้อม badge `← N` บอกว่าถูกอ้างจากกี่คอลเลกชันในแท็บ
 - **ปุ่ม ▦ จัดผัง** — เรียง node อัตโนมัติตามความสัมพันธ์ (master ซ้าย → transaction ขวา) ไม่ทับกัน
 
 ### ฟิลด์ (Field)
 - 9 ชนิด: `String` `Number` `Boolean` `Date` `ObjectId` `Array` `Object` `Decimal128` `Mixed`
 - `_id` เป็น Primary Key (🔑) อัตโนมัติ
 - ตั้ง **required** (`*`), **unique index** (`U`), **enum** + **ค่าเริ่มต้น (default)** ผ่าน popup
+- ธง key เชิงออกแบบ: **🔑 business key** (ฟิลด์ที่คอลเลกชันอื่นใช้อ้าง) · **🌐 session key** (tenant scope เช่น `holdingcode`) · **⛓ key ผสม** (`keygroup` — รวมหลายฟิลด์เป็น compound index เลือกโหมด **ห้ามซ้ำ/ซ้ำได้**) — ฟิลด์ที่เป็น key ถูก pin ขึ้นกลุ่มบนสุดของการ์ดเสมอ
+- **ฟิลด์ซ้อน (nested)** — `Object` / `Array<Object>` มีฟิลด์ย่อยได้หลายชั้น (พับ/ขยายได้)
 - **คำอธิบายบังคับภาษาไทย** — popup คำอธิบาย (💬) validate ต้องมีอักขระไทย; จุดที่ยังขาดจะเป็น 💬 สีเหลืองเตือน (ทั้งฟิลด์และหัวคอลเลกชัน); กดเพิ่มฟิลด์แล้วเปิดช่องใส่คำอธิบายให้ทันที
 - **Array มีชนิดสมาชิก** (`Array<String>`, `Array<Object>` ฯลฯ)
 - ใส่คำอธิบายต่อฟิลด์ (แสดง inline)
@@ -39,7 +42,9 @@
 - ตรวจชื่อซ้ำ/ว่างอัตโนมัติ (ขอบแดงเตือน)
 
 ### เส้นเชื่อมความสัมพันธ์ (Relationship)
-- ลากจากจุดขวาของฟิลด์ → ไปยังคอลเลกชันอื่น
+- relation เป็น **field→field เสมอ**: ลากจากจุดของฟิลด์ FK (ฝั่งลูก) ไปปล่อยที่**ฟิลด์ business key** ของคอลเลกชันเป้าหมาย — หัวลูกศรชี้ทิศ **แม่→ลูก**
+- จุดเชื่อมมีทั้ง 2 ข้างของฟิลด์ — ตอน render เลือกข้างที่หันเข้าหากันให้อัตโนมัติ (ลาก node แล้วเส้นสลับข้างเอง ไม่อ้อมหลังการ์ด)
+- **เชื่อมข้ามแท็บได้** — ปลายทางที่อยู่คนละแท็บแสดงเป็นการ์ดเสมือนเส้นประ (กดแล้วกระโดดไปแท็บนั้น)
 - **ดับเบิลคลิกเส้น** เพื่อวนชนิด: `reference`/`embed` × cardinality `1:1` / `1:N` / `N:N` (embed = เส้นประ)
 - ป้ายกำกับเส้นตามชื่อฟิลด์ + cardinality (อัปเดตตามการ rename)
 - hover node → เส้นที่เกี่ยวข้องสว่างขึ้น เส้นอื่นจางลง
@@ -54,15 +59,18 @@
 - มีการเตือนเมื่อพื้นที่เต็ม / server เชื่อมไม่ได้ (มีโหมดออฟไลน์ localStorage)
 
 ### ศูนย์ส่งออกโค้ด (⚙️ สร้างโค้ด)
-เปลี่ยน diagram เป็นโค้ดใช้งานจริงได้ 7 รูปแบบ (มีปุ่มคัดลอก):
+เปลี่ยน diagram เป็นโค้ดใช้งานจริงได้ 8 รูปแบบ (มีปุ่มคัดลอก):
 
 | รูปแบบ | ได้อะไร |
 |---|---|
-| **mongosh** | `db.createCollection` + `$jsonSchema` validator + `createIndex` (unique/FK) |
+| **mongosh** | `db.createCollection` + `$jsonSchema` validator + `createIndex` (unique / FK / key ผสม compound) |
+| **Go** | `struct` ต่อคอลเลกชัน พร้อม tag `bson`/`json` (`primitive.ObjectID`, `primitive.Decimal128`, nested struct) |
 | **Mongoose** | `Schema` พร้อม `ref`, `enum`, `default`, `unique`, `required` |
 | **TypeScript** | `interface` ต่อคอลเลกชัน (enum → union type, Array → `T[]`) |
 | **Markdown** | ตาราง data dictionary ภาษาไทย |
 | **Wiki** | ชุดไฟล์ `.md` โครงสร้าง wikillm (Obsidian): `Home.md` + `collections/` + `types/` พร้อม `[[wikilink]]` และ mermaid graph — มีปุ่ม **🌐 แสดงแบบ Obsidian** เปิดหน้า wiki สวยๆ ในแอปได้ทันที |
+| **ตัวอย่าง** | ตัวอย่าง JSON document ต่อคอลเลกชัน |
+| **JSON** | โครงสร้าง diagram ดิบ |
 
 ### 🌐 หน้า Wiki แบบ Obsidian (overlay ในหน้าเดียวกัน)
 
@@ -75,12 +83,10 @@
 - **Ctrl+K**: quick switcher ค้นหา note กระโดดไปได้ทันที
 - รองรับภาษาไทยเต็มรูปแบบ (ชื่อโปรเจกต์/collection/field/note)
 - มี route `/wiki/<ชื่อโปรเจกต์>` สำหรับเปิดตรง/แชร์ลิงก์ และ API `GET /api/wiki/<ชื่อโปรเจกต์>` คืนข้อมูล viewer (JSON)
-| **ตัวอย่าง** | ตัวอย่าง JSON document ต่อคอลเลกชัน |
-| **JSON** | โครงสร้าง diagram ดิบ |
 
 ### 🤖 MCP Server (ให้ AI ตัวอื่นเข้ามาทำงาน)
 
-แอปมี MCP server ในตัว 2 transport (tools ชุดเดียวกัน นิยามใน `app/mcp/server.ts`) — AI อื่น (Claude Desktop, Cursor, Kimi CLI ฯลฯ) เชื่อมเข้ามา **อ่าน / เพิ่ม / ลบ / แก้ไข** diagram ได้ครบทุกอย่าง และสั่งสร้างโค้ดได้ทุกรูปแบบ
+แอปมี MCP server ในตัว 2 transport (tools ชุดเดียวกัน **25 ตัว** นิยามใน `app/mcp/server.ts`) — AI อื่น (Claude Desktop, Cursor, Kimi CLI ฯลฯ) เชื่อมเข้ามา **อ่าน / เพิ่ม / ลบ / แก้ไข** diagram ได้ครบทุกอย่าง และสั่งสร้างโค้ดได้ทุกรูปแบบ · server ส่ง **instructions** (กฎโปรเจกต์ + workflow แนะนำ) ให้ client ตอน initialize — AI ภายนอกรู้กติกาโดยไม่ต้องอ่าน docs ก่อน
 
 - **Streamable HTTP** — `http://localhost:3100/mcp` (ติดมากับเว็บแอป ต้องรัน dev/Docker ก่อน)
 - **stdio** — client spawn process เองผ่าน `mcp-stdio.ts` (ไม่ต้องรันเว็บแอป; แตะ `data/projects.json` ก้อนเดียวกัน)
@@ -114,27 +120,33 @@
 
 > ผ่าน `npm run` ต้องมี `--silent` เสมอ ไม่งั้น banner ของ npm ปนเข้าช่อง JSON-RPC · ใช้ `"command": "npx", "args": ["tsx", "D:/mongomodel/mcp-stdio.ts"]` ก็ได้ (script จะ chdir กลับมาที่โปรเจกต์เอง ไม่ขึ้นกับ cwd ของ client) · หรือจะใช้ [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) เป็นสะพานไป HTTP ก็ยังได้: `"command": "npx", "args": ["-y", "mcp-remote", "http://localhost:3100/mcp"]`
 
-**Tools ทั้งหมด:**
+**Tools ทั้งหมด (25 ตัว):** ทุกตัวมี title ภาษาไทย + **annotations** (`readOnlyHint` / `destructiveHint` / `idempotentHint`) — MCP client ใช้ตัดสิน auto-approve ได้ (tool อ่านอย่างเดียวผ่านเลย tool ลบ/เขียนทับค่อยถามผู้ใช้)
 
 | กลุ่ม | Tools |
 |---|---|
 | project | `list_projects` · `create_project` · `rename_project` · `delete_project` |
-| อ่าน | `list_diagrams` · `get_diagram` · `check_descriptions` (รายงานตัวที่ยังไม่มีคำอธิบายไทย) |
-| diagram | `create_diagram` · `rename_diagram` · `delete_diagram` · `switch_diagram` · `replace_diagram` (bulk import ทั้งผัง atomic) |
-| collection | `add_collection` · `update_collection` · `delete_collection` |
+| snapshot | `list_revisions` · `restore_revision` — ระบบเก็บ snapshot อัตโนมัติก่อนเขียนทุกครั้ง (ล่าสุด 20 ไฟล์ใน `data/history/`) แก้พลาดย้อนกลับได้ |
+| อ่าน/ตรวจ | `list_diagrams` · `get_diagram` (`detail: "summary"` = โครงย่อประหยัดโทเคน) · `check_descriptions` (รายงานตัวที่ยังไม่มีคำอธิบายไทย) · `lint_model` (ตรวจกฎออกแบบ เช่น ฟิลด์เงินเป็น Number, unique บนฟิลด์ไม่ required, FK ชนิดไม่ตรงปลายทาง, array ไม่มีขอบเขต) |
+| diagram | `create_diagram` · `rename_diagram` · `delete_diagram` · `switch_diagram` · `replace_diagram` (bulk import ทั้งผัง — validate ทั้งหมดก่อนแล้วเขียน atomic) |
+| collection | `add_collection` · `update_collection` · `delete_collection` · `move_collection` (ย้ายข้ามแท็บ — เส้นเดิมกลายเป็นเส้นข้ามแท็บอัตโนมัติ) |
 | field | `add_field` · `update_field` · `delete_field` (รองรับ nested ด้วย `parent`/`children` และ dotted path เช่น `address.geo.lat`) |
-| relation | `add_relation` (reference/embed × cardinality) · `delete_relation` |
-| codegen | `generate_code` — mongosh / mongoose / typescript / markdown / sample / json / **wiki** (wikillm) |
+| relation | `add_relation` (field→field: บังคับ `targetfield` · reference/embed × cardinality) · `delete_relation` |
+| codegen | `generate_code` — mongosh / go / mongoose / typescript / markdown / sample / json / **wiki** (wikillm) |
 
 **กฎเสริมที่ caller ควรรู้:**
 - **คำอธิบายภาษาไทยเสมอ** (อ่านรายละเอียดด้านล่าง)
 - `add_collection` **ปฏิเสธ label ซ้ำ**ใน diagram เดียวกัน — ส่ง `replace: true` เพื่อแทนที่ (ลบเส้นเดิมด้วย)
-- error ทุกตัวมี **machine code** นำหน้าข้อความไทย เช่น `[DUPLICATE_LABEL]` `[DESCRIPTION_NOT_THAI]` `[PROJECT_NOT_FOUND]` — parse เอาได้
+- relation ต้องอ้าง **business key** ของฝั่งแม่ (เช่น `code`, `holdingcode`) — ห้ามอ้าง identity ภายในอย่าง `guidfixed` เพราะไม่พกพาข้ามเครื่อง
+- field ซ้อน (`children`) รับลึก **2 ชั้นต่อคำสั่ง** — ลึกกว่านั้นได้ error `[FIELD_TOO_DEEP]` พร้อมทางหนี: เรียก `add_field` + `parent` แบบ dotted path เติมทีละชั้น (ข้อจำกัดนี้ทำให้ schema ของ tools/list เล็กลง ~27% คือ 68KB → 50KB และไม่มี `$ref` ที่ client บางตัวปฏิเสธ)
+- input มีเพดานขนาด พร้อม error ไทย + code: ชื่อ ≤200 ตัวอักษร (`[VALUE_TOO_LONG]`) · fields ≤300/คำสั่ง (`[TOO_MANY_FIELDS]`) · collections ≤200 (`[TOO_MANY_COLLECTIONS]`) · relations ≤500 (`[TOO_MANY_RELATIONS]`)
+- **optimistic concurrency** — ทุก mutation เช็ค `rev` ก่อนเขียน ชนแล้ว retry อัตโนมัติ (อ่านใหม่-ทำซ้ำ สูงสุด 30 รอบ) — AI หลายตัวเขียนพร้อมกันงานไม่ทับกันหายเงียบ
+- ลบ field / collection / diagram แล้ว**กวาดเส้นที่เกี่ยวให้ทุก diagram** (รวมเส้นข้ามแท็บ) พร้อมรายงานจำนวนเส้นที่ลบใน response — ไม่ทิ้งเส้นค้าง ไม่ลบเงียบ
+- error ทุกตัวมี **machine code** นำหน้าข้อความไทย เช่น `[DUPLICATE_LABEL]` `[DESCRIPTION_NOT_THAI]` `[PROJECT_NOT_FOUND]` `[FIELD_TOO_DEEP]` `[REVISION_NOT_FOUND]` — parse เอาได้
 
 **บังคับคำอธิบายภาษาไทยเสมอ** — ทุก collection/field ที่สร้างหรือแก้ผ่าน MCP ต้องมี `description` ภาษาไทย (เช็กอักขระไทยจริง) ไม่มี/เป็นอังกฤษ = error พร้อมบอกจุด · เรียก `check_descriptions` เพื่อดูของเก่าที่ยังขาดแล้วเติมให้ครบ · ฝั่ง UI ก็บังคับเหมือนกัน: popup คำอธิบาย validate ไทย + จุดที่ขาดมี 💬 สีเหลืองเตือน
 
 - AI แก้ปุ๊บเขียนลง `data/projects.json` ทันที — **UI ที่เปิดอยู่ auto refresh ให้เอง**ภายใน 3 วิ พร้อม toast แจ้ง
-- ไม่มี auth — ใช้ในเครื่องเท่านั้น (เหมือน dev server ทั่วไป)
+- ไม่มี auth — ใช้ในเครื่องเท่านั้น (เหมือน dev server ทั่วไป) แต่มีเกราะพื้นฐาน: `/mcp` เช็ค header `Origin` — request จากเบราว์เซอร์ที่ host ไม่ตรงได้ `403 [FORBIDDEN_ORIGIN]` (กัน CSRF จากเว็บอื่นที่ผู้ใช้เปิดค้าง; MCP client ปกติไม่ส่ง Origin จึงผ่าน) · ชื่อ project ที่ชนกับ `Object.prototype` (`__proto__`, `toString` ฯลฯ) ได้ error ภาษาไทยปกติ ไม่เกิด prototype pollution
 - ถ้าเปิด UI ครั้งแรกแล้ว server ว่าง ระบบจะ **migrate** งานจาก localStorage ขึ้นเป็นโปรเจกต์ `default` ให้อัตโนมัติ
 
 ---
@@ -157,6 +169,7 @@ npm run docker:down
 ```
 
 - UI → **http://localhost:3100** · MCP → **http://localhost:3100/mcp**
+- พอร์ตผูกที่ **`127.0.0.1` เท่านั้น** (ไม่เปิดให้ทั้ง LAN) — `/mcp` กับ `/api` ไม่มี auth ใครยิงถึงก็ลบทั้งโปรเจกต์ได้ ถ้าต้องการเปิดออก LAN จริงต้องแก้ `docker-compose.yml` เองพร้อมยอมรับความเสี่ยง
 - ข้อมูลทุกโปรเจกต์อยู่ที่ `./data/projects.json` บนเครื่อง (mount เข้า container) — ลบ/สร้าง container ใหม่ข้อมูลไม่หาย
 - `restart: unless-stopped` — เปิด Docker Desktop เมื่อไหร่ก็ขึ้นเอง
 
@@ -204,6 +217,7 @@ mongomodeleditor/
 │   ├── globals.css     # ธีม + tweak React Flow
 │   └── error.tsx       # error boundary กันจอขาว
 ├── data/projects.json  # ข้อมูลทุกโปรเจกต์ (สร้างอัตโนมัติ, git-ignored, mount เข้า container)
+├── data/history/       # snapshot อัตโนมัติก่อนเขียนทุกครั้ง (20 ไฟล์ล่าสุด — ย้อนด้วย MCP restore_revision)
 ├── Dockerfile          # production image (Next.js standalone, multi-stage)
 ├── docker-compose.yml  # รันค้างใน Docker Desktop (พอร์ต 3100, mount ./data)
 ├── mcp-stdio.ts      # MCP transport แบบ stdio (client spawn เอง — npm run mcp:stdio)
@@ -221,10 +235,10 @@ mongomodeleditor/
 1. **สร้าง/เลือกโปรเจกต์** จากหน้าแรก (หรือ 📥 นำเข้าไฟล์เดิม)
 2. กด **＋ เพิ่มคอลเลกชัน** → ได้กล่องใหม่ ดับเบิลคลิกที่หัวเพื่อตั้งชื่อ
 3. กด **＋ เพิ่มฟิลด์** ในกล่อง → พิมพ์ชื่อ เลือกชนิด ตั้ง required/unique/enum
-4. **เชื่อมความสัมพันธ์:** ลากจากจุดกลมขวาของฟิลด์ (เช่น `user_id`) ไปปล่อยที่คอลเลกชันเป้าหมาย
+4. **เชื่อมความสัมพันธ์:** ลากจากจุดของฟิลด์ FK (เช่น `customer_code`) ไปปล่อยที่**ฟิลด์ business key** ของคอลเลกชันเป้าหมาย (เช่น `customers.code`)
 5. **ดับเบิลคลิกที่เส้น** เพื่อสลับ reference/embed และ cardinality
 6. กด **▦ จัดผัง** ให้เรียงสวยอัตโนมัติ
-7. กด **⚙️ สร้างโค้ด** → เลือกแท็บ mongosh/Mongoose/TypeScript/Wiki → **คัดลอก** ไปใช้
+7. กด **⚙️ สร้างโค้ด** → เลือกแท็บ mongosh/Go/Mongoose/TypeScript/Wiki → **คัดลอก** ไปใช้
 8. งานบันทึกเองอัตโนมัติ — AI แก้ผ่าน MCP เมื่อไหร่ จอจะ **auto refresh** ให้เอง
 
 **คีย์ลัด:** `Ctrl+D` ทำซ้ำคอลเลกชัน · `Ctrl+K` ค้นหา · `Delete` ลบสิ่งที่เลือก · ลากพื้นว่าง = เลือกหลายอัน
@@ -279,14 +293,14 @@ mongomodeleditor/
 }
 ```
 
-**โครงสร้าง edge (ความสัมพันธ์):** `sourceHandle` = `"<fieldId>-s"`, `targetHandle` = `"ref"`
+**โครงสร้าง edge (ความสัมพันธ์):** field→field เสมอ — `sourceHandle` = `"<fieldId>-s"` (ฟิลด์ FK ฝั่งลูก), `targetHandle` = `"<fieldId>-t"` (ฟิลด์ business key ฝั่งแม่)
 ```jsonc
 {
   "id": "e1",
   "source": "sales_orders",
-  "sourceHandle": "sales_orders__customer_id-s",
+  "sourceHandle": "sales_orders__customer_code-s",
   "target": "customers",
-  "targetHandle": "ref",
+  "targetHandle": "customers__code-t",
   "data": { "kind": "reference", "cardinality": "1-n" }
 }
 ```
@@ -335,7 +349,7 @@ mongomodeleditor/
 | ส่วน | อยู่ที่ |
 |---|---|
 | Type กลาง (`Field`, `CollectionData`, `EdgeRelData`) | `schema.ts` |
-| Generator ทั้งหมด | `schema.ts` (`toMongosh`, `toMongoose`, `toWiki`, …) |
+| Generator ทั้งหมด | `schema.ts` (`toMongosh`, `toGo`, `toMongoose`, `toWiki`, `lintModel`, …) |
 | Self-check ของ codegen | `schema.ts` → `demo()` (รันตอน dev, throw ถ้าพัง) |
 | หน้าเลือก/จัดการโปรเจกต์ | `page.tsx` → `ProjectHome` |
 | กล่องคอลเลกชัน (node UI) | `page.tsx` → `CollectionNodeView` |
@@ -363,8 +377,8 @@ mongomodeleditor/
 
 - เป็น **เครื่องมือออกแบบ** เท่านั้น — ไม่เชื่อมต่อ MongoDB จริง (ส่งออกเป็นโค้ดให้เอาไปรันเอง)
 - ข้อมูลเก็บที่ `data/projects.json` บนเครื่องที่รัน server (`localStorage` เป็นแค่ cache เผื่อออฟไลน์) — ย้ายเครื่องต้องก๊อปไฟล์นี้ไปด้วย หรือ **💾 สำรอง** เก็บไฟล์ไว้
-- การแก้ชนกัน (UI กับ AI แก้พร้อมกัน) เป็นแบบ last-write-wins — ฝั่ง UI จะ auto refresh ตามของใหม่บน server เสมอ
-- ยังไม่รองรับ nested document แบบซ้อนหลายชั้น (ใช้ `Array<Object>` แทนได้)
+- การเขียนชนกัน (หลาย AI / หลายแท็บแก้พร้อมกัน) กันด้วย **optimistic concurrency (`rev`)** — เขียนด้วย rev เก่าถูกปฏิเสธ ฝั่ง MCP retry ให้อัตโนมัติ ฝั่ง UI ได้ 409 แล้ว auto refresh ของใหม่ก่อน · พลาดจริงยังย้อนได้จาก snapshot อัตโนมัติ (20 จุดล่าสุดใน `data/history/`)
+- ไม่มี auth — ออกแบบให้ใช้ในเครื่องเดียว (Docker ผูกพอร์ต `127.0.0.1` เท่านั้น) ห้ามเปิด bind ออก LAN/อินเทอร์เน็ตตรงๆ
 
 ---
 
@@ -374,4 +388,4 @@ MIT — นำไปใช้/ดัดแปลง/ต่อยอดได้�
 
 ---
 
-<sub>สร้างด้วย 🤖 [Claude Code](https://claude.com/claude-code) (Opus 4.8 · Fable · Sonnet)</sub>
+<sub>สร้างด้วย 🤖 [Claude Code](https://claude.com/claude-code) (Opus · Fable · Sonnet)</sub>

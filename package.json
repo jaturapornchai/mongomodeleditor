@@ -13,7 +13,7 @@
     "docker:logs": "docker-compose.exe logs -f"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@xyflow/react": "^12.11.2",
     "elkjs": "^0.12.0",
     "next": "16.2.10",

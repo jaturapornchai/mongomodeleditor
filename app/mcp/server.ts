@@ -84,9 +84,21 @@ const hasThaiDesc = (d: string | undefined): boolean =>
 function thaiDescError(what: string, desc: string | undefined): string | null {
   if (desc === undefined || desc.trim() === "")
     return `[DESCRIPTION_NOT_THAI] ${what} ต้องมี description (คำอธิบาย)`;
-  if (!isThai(desc))
-    return `[DESCRIPTION_NOT_THAI] ${what} description ต้องเป็นภาษาไทย (อย่างน้อยมีอักขระไทย) — ได้รับ: "${desc}"`;
+  if (!isThai(desc)) {
+    // ค่าที่เป็น "?" ล้วน = ข้อความไทยถูก encode ผิดระหว่างส่ง (terminal/client ไม่ใช่ UTF-8)
+    // ไม่ใช่ AI ลืมใส่ภาษาไทย — ต้องบอกใบ้ ไม่งั้นฝั่งโน้น debug ผิดทาง (ไปแก้ prompt แทน transport)
+    const hint = /^[?\s]+$/.test(desc) && desc.includes("?")
+      ? ' (ค่าที่ได้รับเป็น "?" ล้วน — ข้อความไทยน่าจะถูกแปลงเพี้ยนระหว่างส่ง ตรวจว่า client ส่ง UTF-8 หรือไม่)'
+      : "";
+    return `[DESCRIPTION_NOT_THAI] ${what} description ต้องเป็นภาษาไทย (อย่างน้อยมีอักขระไทย) — ได้รับ: "${desc}"${hint}`;
+  }
   return null;
+}
+
+/** กฎห้ามอ้าง guidfixed (AGENTS.md): identity ภายในเครื่อง ไม่พกพาตอน export/import — relation ต้องชี้ business key */
+function guidfixedTargetError(targetLabel: string, targetFieldName: string): string | null {
+  if (targetFieldName.toLowerCase() !== "guidfixed") return null;
+  return `[RELATION_TARGET_GUIDFIXED] ห้ามสร้าง relation ชี้ไปที่ "${targetLabel}.${targetFieldName}" — guidfixed เป็น identity ภายในเครื่อง ไม่ถูกพกพาตอน export/import (ความสัมพันธ์จะพังหลังย้ายข้อมูล) ให้ชี้ business key ของฝั่งแม่แทน เช่น code/holdingcode`;
 }
 
 /**
@@ -918,12 +930,25 @@ export function createServer(): McpServer {
       const count = (dest.d.nodes as N[]).length;
       node.position = { x: 120 + count * 40, y: 120 + count * 40 };
       (dest.d.nodes as N[]).push(node);
+      // invariant: เส้นข้าม tab เก็บใน diagram ต้นทาง (source) เสมอ — node ที่เป็นฝั่ง source ย้ายไปไหน
+      // เส้นต้องย้ายตาม ไม่งั้นเส้นค้างใน diagram ที่ไม่มี source → UI/get_diagram มองไม่เห็นเลย (orphan เงียบ)
+      let edgesRehomed = 0;
+      for (const dd of Object.values(p.diagrams)) {
+        if (dd === dest.d) continue;
+        const moving = (dd.edges as E[]).filter((e) => e.source === node.id);
+        if (moving.length) {
+          dd.edges = (dd.edges as E[]).filter((e) => e.source !== node.id);
+          (dest.d.edges as E[]).push(...moving);
+          edgesRehomed += moving.length;
+        }
+      }
       await save(project, p);
       return ok({
         moved: node.data.label,
         from: p.tabs.find((t) => t.id === fromId)?.name ?? fromId,
         to: dest.name,
-        note: "เส้นความสัมพันธ์เดิมยังอยู่ — กลายเป็นเส้นข้าม tab โดยอัตโนมัติ",
+        edgesRehomed,
+        note: "เส้นความสัมพันธ์เดิมยังอยู่ — กลายเป็นเส้นข้าม tab โดยอัตโนมัติ (เส้นที่ collection นี้เป็นต้นทางถูกย้ายตามไป diagram ปลายทาง)",
       });
     })
   );
@@ -1165,6 +1190,9 @@ export function createServer(): McpServer {
       if ("error" in fh) return err(fh.error);
       const tf = findField(targetNode.data.fields, targetfield);
       if ("error" in tf) return err(tf.error);
+      // บังคับกฎ "ห้ามอ้าง guidfixed" จริง (ไม่ใช่แค่เขียนไว้ใน description ของ tool)
+      const gErr = guidfixedTargetError(targetNode.data.label, tf.field.name);
+      if (gErr) return err(gErr);
       const relKind = kind ?? "reference";
       const embed = relKind === "embed";
       const edges = (hit.d.edges as E[]).filter(
@@ -1335,6 +1363,9 @@ export function createServer(): McpServer {
         const tf = tgt.data.fields.find((x) => x.name === r.targetfield);
         if (!tf)
           return err(`[FIELD_NOT_FOUND] ไม่พบ field เป้าหมาย "${r.targetfield}" ใน collection "${r.target}"`);
+        // กฎเดียวกับ add_relation — validate ก่อนเขียน (all-or-nothing)
+        const gErr = guidfixedTargetError(r.target, tf.name);
+        if (gErr) return err(gErr);
         const embed = r.kind === "embed";
         edges.push({
           id: `e_${src.data.label}_${f.name}_${tgt.data.label}`,
@@ -1414,7 +1445,7 @@ export function createServer(): McpServer {
             : format === "mongoose"
             ? toMongoose(gn, ge, allGn)
             : format === "typescript"
-              ? toTypeScript(gn, ge)
+              ? toTypeScript(gn, ge, allGn)
               : format === "markdown"
                 ? toMarkdown(gn, ge, allGn)
                 : format === "sample"

@@ -129,6 +129,50 @@ const removeFieldInTree = (fields: Field[], fid: string): Field[] =>
     .filter((f) => f.id !== fid)
     .map((f) => (f.children ? { ...f, children: removeFieldInTree(f.children, fid) } : f));
 
+// รวม field id ทุกชั้น (handle ของเส้นผูกกับ field id — ใช้เช็คว่าปลายเส้นยังมี field จริง)
+const collectFieldIds = (fields: Field[], into: Set<string>): Set<string> => {
+  for (const f of fields) {
+    into.add(f.id);
+    if (f.children) collectFieldIds(f.children, into);
+  }
+  return into;
+};
+
+// กวาดเส้นค้างใน "แท็บอื่น" หลังลบ node/field (เส้นข้าม tab เก็บใน diagram ต้นทาง = แท็บอื่น
+// ถือเส้นชี้มาหาของที่เพิ่งถูกลบได้ → ค้างถาวรถ้าไม่กวาด) — คู่ขนาน dropEdgesTouching ฝั่ง MCP (server.ts)
+// เช็คแบบ declarative กับ universe ทุกแท็บ: node หาย หรือ field ตาม handle หาย = เส้นตาย
+// mutate เฉพาะ entry ของแท็บที่มีเส้นค้าง · คืนจำนวน + แท็บที่โดน เพื่อรายงานผู้ใช้ (ห้ามลบเงียบ)
+const sweepCrossTabEdges = (
+  diagrams: Record<string, { nodes: CollectionNode[]; edges: RelEdge[] }>,
+  cur: string
+): { removed: number; tabIds: string[] } => {
+  const fieldsByNode = new Map<string, Set<string>>();
+  for (const d of Object.values(diagrams))
+    for (const n of d.nodes) fieldsByNode.set(n.id, collectFieldIds(n.data.fields, new Set()));
+  // handle canonical = `${fieldId}-s/-t` (เก่าบางเส้นมี suffix ข้าง -l/-r) — ตัดให้เหลือ field id
+  const fidOf = (h?: string | null) => h?.replace(/-[st](-[lr])?$/, "");
+  const alive = (nodeId: string, handle?: string | null): boolean => {
+    const fs = fieldsByNode.get(nodeId);
+    if (!fs) return false; // node ปลายเส้นหายจากทุกแท็บ
+    const f = fidOf(handle);
+    return !f || fs.has(f); // field ปลายเส้นหายจาก node = เส้นตาย
+  };
+  let removed = 0;
+  const tabIds: string[] = [];
+  for (const [id, d] of Object.entries(diagrams)) {
+    if (id === cur) continue; // แท็บปัจจุบันจัดการผ่าน deleteElements อยู่แล้ว (edges เป็น controlled state)
+    const kept = d.edges.filter(
+      (e) => alive(e.source, e.sourceHandle) && alive(e.target, e.targetHandle)
+    );
+    if (kept.length !== d.edges.length) {
+      removed += d.edges.length - kept.length;
+      diagrams[id] = { ...d, edges: kept };
+      tabIds.push(id);
+    }
+  }
+  return { removed, tabIds };
+};
+
 // กลุ่ม key ที่ pin บนสุดของ collection: PK(_id ตัวแรก) / key(🔑) / sessionkey(🌐) / keygroup(⛓ key ผสม) — field อื่นตามหลัง
 const isKeyField = (fields: Field[], f: Field): boolean =>
   Boolean(f.key || f.sessionkey || f.keygroup || (f.name === "_id" && fields.find((o) => o.name === "_id") === f));
@@ -237,6 +281,7 @@ type FieldRowProps = {
   onEditDesc: (f: Field) => void;
   onEditEnumDefault: (f: Field) => void;
   onEditKeyGroup: (f: Field) => void;
+  onDuplicate?: (fid: string) => void; // ทำซ้ำ field — เฉพาะระดับบน
   dragIndexRef: { current: number | null };
 };
 
@@ -252,6 +297,7 @@ function FieldRow({
   onEditDesc,
   onEditEnumDefault,
   onEditKeyGroup,
+  onDuplicate,
   dragIndexRef,
 }: FieldRowProps) {
   const top = depth === 0;
@@ -315,6 +361,7 @@ function FieldRow({
           </button>
         )}
         <input
+          data-fid={f.id}
           className={`nodrag w-0 flex-1 rounded px-1 py-0.5 outline-none hover:bg-slate-700/60 focus:bg-slate-700 ${
             f.name === "_id" && top ? "font-semibold text-amber-200" : "text-slate-200"
           } ${nameErr ? "ring-1 ring-red-500" : ""}`}
@@ -383,8 +430,9 @@ function FieldRow({
             className={`nodrag shrink-0 text-[10px] ${
               f.key ? "opacity-100" : "opacity-30 hover:opacity-70"
             }`}
-            title={f.key ? "business key — collection อื่นอ้างอิง field นี้ (คลิกเพื่อยกเลิก)" : "ตั้งเป็น business key (🔑)"}
-            onClick={() => onPatch(f.id, { key: !f.key })}
+            title={f.key ? "business key — collection อื่นอ้างอิง field นี้ (คลิกเพื่อยกเลิก)" : "ตั้งเป็น business key (🔑) — จะติ๊ก * บังคับกรอกให้อัตโนมัติ (ยกเลิกเองได้)"}
+            // key ที่ปล่อยว่างได้ = หลายเอกสารไม่มีค่า key แล้วอ้างอิงหาไม่เจอ — ติ๊ก required ให้เลย (ผู้ใช้กด * ถอดเองได้)
+            onClick={() => onPatch(f.id, { key: !f.key, ...(!f.key && !f.required ? { required: true } : {}) })}
           >
             🔑
           </button>
@@ -453,6 +501,15 @@ function FieldRow({
         >
           💬
         </button>
+        {top && onDuplicate && (
+          <button
+            className="nodrag shrink-0 text-[10px] text-slate-600 hover:text-sky-300"
+            title="ทำซ้ำฟิลด์นี้ (คัดลอกชื่อ/ชนิด/ตัวเลือกทั้งหมด)"
+            onClick={() => onDuplicate(f.id)}
+          >
+            ⧉
+          </button>
+        )}
         <button
           className="nodrag text-slate-600 hover:text-red-400"
           title="ลบฟิลด์"
@@ -719,8 +776,17 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
     if (dead.length) deleteElements({ edges: dead.map((e) => ({ id: e.id })) });
   };
 
+  // โฟกัสช่องชื่อของ field ที่เพิ่งสร้าง (query DOM หลัง render — click เป็น discrete event React flush ให้ก่อน timeout)
+  const focusFieldName = (fid: string) =>
+    setTimeout(() => {
+      const el = document.querySelector<HTMLInputElement>(`input[data-fid="${fid}"]`);
+      el?.focus();
+      el?.select();
+    }, 0);
+
   const addField = () => {
-    // สร้างแล้วเปิดช่องใส่คำอธิบายทันที (บังคับภาษาไทย) — ถ้ายกเลิกจะเหลือ marker เหลืองเตือน
+    // โฟกัสช่องชื่อทันทีให้ตั้งชื่อก่อน (คำอธิบายไทยค่อยเติมผ่าน 💬 — marker เหลืองเตือนจนกว่าจะใส่)
+    // ห้ามเปิด popup คำอธิบายเองตรงนี้: popup ที่เด้งเองกลืนคลิกถัดไปของผู้ใช้ และได้คำอธิบายผูกกับชื่อ auto (field_2)
     const nf: Field = {
       id: uid(),
       name: "field_" + (data.fields.length + 1),
@@ -728,13 +794,30 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
       required: false,
     };
     updateNodeData(id, { fields: [...data.fields, nf] });
-    editFieldDescription(nf);
+    focusFieldName(nf.id);
   };
 
   const addChild = (parentId: string) => {
     const nf: Field = { id: uid(), name: "field", type: "String" as FieldType, required: false };
     updateNodeData(id, { fields: addChildInTree(data.fields, parentId, nf) });
-    editFieldDescription(nf);
+    focusFieldName(nf.id);
+  };
+
+  // ทำซ้ำ field (เฉพาะระดับบน) — pattern ซ้ำๆ อย่าง created_at/updated_at ไม่ต้องพิมพ์ใหม่ทุกครั้ง
+  const duplicateField = (fid: string) => {
+    const idx = data.fields.findIndex((f) => f.id === fid);
+    if (idx < 0) return;
+    const src = data.fields[idx];
+    const copy: Field = {
+      ...src,
+      id: uid(),
+      name: `${src.name}_copy`,
+      children: src.children ? cloneFields(src.children) : undefined,
+    };
+    const fs = [...data.fields];
+    fs.splice(idx + 1, 0, copy);
+    updateNodeData(id, { fields: fs });
+    focusFieldName(copy.id); // ให้แก้ชื่อได้ทันที
   };
 
   const duplicate = () => {
@@ -966,6 +1049,7 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
               onEditDesc={editFieldDescription}
               onEditEnumDefault={editEnumDefault}
               onEditKeyGroup={editKeyGroup}
+              onDuplicate={duplicateField}
               dragIndexRef={dragIndex}
             />
           </div>
@@ -1126,12 +1210,16 @@ function CrossRefNodeView({ data }: NodeProps<Node<CollectionData>>) {
     >
       <div className="font-semibold text-amber-300">{data.label}</div>
       <div className="text-slate-400">⇢ แท็บ “{data.description}” — กดเพื่อข้ามไป</div>
-      {(data.refHandles ?? []).map((h, i) => (
-        <span key={h}>
-          <Handle type="target" position={Position.Left} id={`${h}-l`} className="!bg-amber-400" style={{ left: -10, top: 16 + i * 16 }} />
-          <Handle type="target" position={Position.Right} id={`${h}-r`} className="!bg-amber-400" style={{ right: -10, top: 16 + i * 16 }} />
-        </span>
-      ))}
+      {(data.refHandles ?? []).map((h, i) => {
+        // handle canonical ลงท้าย -s (ต้นทาง/FK) หรือ -t (ปลายทาง) — stub ฝั่ง source เกิดจากข้อมูลเก่าที่เส้นค้างผิด diagram
+        const type = /-s$/.test(h) ? ("source" as const) : ("target" as const);
+        return (
+          <span key={h}>
+            <Handle type={type} position={Position.Left} id={`${h}-l`} className="!bg-amber-400" style={{ left: -10, top: 16 + i * 16 }} />
+            <Handle type={type} position={Position.Right} id={`${h}-r`} className="!bg-amber-400" style={{ right: -10, top: 16 + i * 16 }} />
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -1366,7 +1454,8 @@ function Designer({
   const [codeTab, setCodeTab] = useState<CodeTab>("mongosh");
   const [saveError, setSaveError] = useState(false);
   const [externalEdit, setExternalEdit] = useState(false);
-  const [aiNotice, setAiNotice] = useState(false); // toast "อัปเดตจาก AI แล้ว" หลัง auto refresh
+  const [aiNotice, setAiNotice] = useState(""); // toast หลัง auto refresh — ข้อความบอกด้วยว่าประวัติ undo ถูกล้างไหม
+  const [sweepNotice, setSweepNotice] = useState(""); // toast แจ้งกวาดเส้นค้างในแท็บอื่นหลังลบ node/field (ห้ามลบเงียบ)
   const fileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const loadedId = useRef(""); // diagram id ที่โหลดเข้า state แล้ว (กัน autosave ก่อนโหลด)
@@ -1379,6 +1468,10 @@ function Designer({
   const serverOn = useRef(false); // bootstrap ต่อ server ได้ไหม — ไม่ได้ = โหมด offline (localStorage ล้วน)
   // PUT เจอ 409 ค้างอยู่ — local มีการแก้ที่ยังไม่ถูก push ห้าม poll เอาของ server มาทับเงียบ (ต้องรอผู้ใช้กดโหลดที่แถบเตือน)
   const conflict = useRef(false);
+  // serialize PUT เป็นคิวเดียว — สอง PUT ที่วิ่งพร้อมกันอ่าน knownRev ตัวเดียวกัน ตัวหลังจะ 409 ชนกับตัวเอง
+  // แล้ว save/poll ค้างทั้งเซสชัน (การแก้หลังจากนั้นดูเหมือนสำเร็จบนจอแต่ไม่ถูกบันทึกจริง)
+  const putChain = useRef<Promise<void>>(Promise.resolve());
+  const saving = useRef(false); // PUT กำลังวิ่ง — poll ห้ามตีความ rev ที่ขยับว่าเป็นของคนอื่น
   const { fitView, getViewport, setViewport, getInternalNode } = useReactFlow();
 
   // Ctrl+wheel / Ctrl+ลากซ้าย = scroll/แพนจออิสระ (wheel ธรรมดา = zoom, ลากซ้ายธรรมดา = กรอบเลือก เหมือนเดิม)
@@ -1474,32 +1567,47 @@ function Designer({
     }
   }, []);
 
-  // PUT project ทั้งก้อนขึ้น server (fire-and-forget) — จำ rev/payload ไว้แยกการแก้ของตัวเอง
+  // PUT project ทั้งก้อนขึ้น server — เข้าคิวทีละตัว (serialize) ให้แต่ละ PUT อ่าน knownRev "หลัง"
+  // ตัวก่อนหน้าจบแล้วเสมอ ไม่มีทางยิงซ้อนด้วย rev เก่าแล้ว 409 ชนกับตัวเอง
   const pushToServer = useCallback(
-    async (payload: string) => {
+    (payload: string, force = false) => {
       if (!serverOn.current) return;
-      try {
-        // แนบ rev ที่ถืออยู่ — ถ้ามีคนอื่น (แท็บอื่น/AI ผ่าน MCP) เขียนไปก่อน server จะตอบ 409
-        // แทนที่จะทับงานเขาหายเงียบ
-        const body = JSON.stringify({ ...JSON.parse(payload), expectedRev: knownRev.current });
-        const res = await fetch(`/api/projects/${encodeURIComponent(project)}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body,
-        });
-        if (res.status === 409) {
-          conflict.current = true; // ระงับ auto refresh — ไม่งั้น poll รอบถัดไปทับการแก้ที่เพิ่งชนหายเงียบใน 3 วิ
-          setExternalEdit(true); // แถบเตือน "มีคนแก้ไปแล้ว — refresh ก่อนแก้ต่อ"
-          return;
+      putChain.current = putChain.current.then(async () => {
+        // มี conflict ค้าง — ยิงต่อไปก็ 409 รัวๆ รอผู้ใช้เลือกที่แถบเตือน (โหลดจาก server / บันทึกทับ)
+        if (conflict.current && !force) return;
+        saving.current = true;
+        try {
+          // แนบ rev ที่ถืออยู่ — ถ้ามีคนอื่น (แท็บอื่น/AI ผ่าน MCP) เขียนไปก่อน server จะตอบ 409
+          // แทนที่จะทับงานเขาหายเงียบ · force (ผู้ใช้กด "บันทึกทับ" เอง) = ไม่แนบ rev เขียนทับเลย
+          const body = JSON.stringify({
+            ...JSON.parse(payload),
+            ...(force ? {} : { expectedRev: knownRev.current }),
+          });
+          const res = await fetch(`/api/projects/${encodeURIComponent(project)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body,
+          });
+          if (res.status === 409) {
+            conflict.current = true; // ระงับ auto refresh — ไม่งั้น poll รอบถัดไปทับการแก้ที่เพิ่งชนหายเงียบใน 3 วิ
+            setExternalEdit(true); // แถบเตือน "การแก้ล่าสุดยังไม่ถูกบันทึก — เลือกโหลด/บันทึกทับ"
+            return;
+          }
+          if (res.ok) {
+            const j = await res.json();
+            if (typeof j.rev === "number") knownRev.current = j.rev;
+            lastPayload.current = payload;
+            if (force) {
+              conflict.current = false;
+              setExternalEdit(false);
+            }
+          }
+        } catch {
+          // server หลุด — localStorage ยังเก็บอยู่
+        } finally {
+          saving.current = false;
         }
-        if (res.ok) {
-          const j = await res.json();
-          if (typeof j.rev === "number") knownRev.current = j.rev;
-          lastPayload.current = payload;
-        }
-      } catch {
-        // server หลุด — localStorage ยังเก็บอยู่
-      }
+      });
     },
     [project]
   );
@@ -1555,7 +1663,8 @@ function Designer({
     const t = setInterval(() => {
       if (!serverOn.current || knownRev.current === null) return;
       // มี conflict (409) ค้าง — local ถือการแก้ที่ server ยังไม่รับ ห้าม auto ทับเงียบ รอผู้ใช้เลือกที่แถบเตือน
-      if (conflict.current) return;
+      // PUT กำลังวิ่ง — rev บน server กำลังขยับจาก save ของเราเอง รอบหน้าค่อยเช็ค (กัน false-positive "AI แก้")
+      if (conflict.current || saving.current) return;
       void (async () => {
         try {
           const res = await fetch(
@@ -1568,17 +1677,34 @@ function Designer({
           }
           if (!res.ok) return;
           const p = await res.json();
-          if (typeof p.rev !== "number" || p.rev === knownRev.current) return;
+          // ระหว่างรอ fetch อาจมี PUT เริ่ม/ชน 409 — ผลจาก server ยังไม่นิ่ง รอบหน้าเช็คใหม่
+          if (conflict.current || saving.current) return;
+          // rev เดินหน้าอย่างเดียว: response ที่ rev ≤ ของเรา = ค้างมาจากก่อน save ของเราเสร็จ ห้ามเอามาทับ
+          const kr = knownRev.current;
+          if (typeof p.rev !== "number" || kr === null || p.rev <= kr) return;
+          const payload = JSON.stringify({ tabs: p.tabs, cur: p.cur, diagrams: p.diagrams });
+          if (payload === lastPayload.current) {
+            // echo ของ save ตัวเอง (poll เห็น rev ใหม่ก่อน handler ของ PUT อัปเดต knownRev)
+            // — ห้ามขึ้นแถบ "อัปเดตจาก AI" และห้าม openDiagram ทับ state (จะกลืนคลิก/toggle ที่เพิ่งกด)
+            knownRev.current = p.rev;
+            return;
+          }
           knownRev.current = p.rev;
           // auto refresh — เอาของใหม่จาก server มาทับ (preserveView กันจอเด้ง)
           diagramsMap.current = p.diagrams;
           setAllDiagrams(p.diagrams);
-          lastPayload.current = JSON.stringify({ tabs: p.tabs, cur: p.cur, diagrams: p.diagrams });
+          lastPayload.current = payload;
           setTabs(p.tabs);
           const id = p.diagrams[p.cur] ? p.cur : p.tabs[0]?.id;
+          // ประวัติ undo เป็นของ state ชุดเก่า — openDiagram ล้างทิ้ง ต้องบอกผู้ใช้ตรงๆ (ไม่ให้กด Ctrl+Z แล้วงง)
+          const histLost = past.current.length > 0 || future.current.length > 0;
           if (id) openDiagram(id, true);
-          setAiNotice(true);
-          setTimeout(() => setAiNotice(false), 3000);
+          setAiNotice(
+            histLost
+              ? "🔄 อัปเดตจาก AI (MCP) หรือแหล่งอื่นแล้ว — ประวัติย้อนกลับ (Ctrl+Z) ของแท็บนี้ถูกล้างเพราะโหลดข้อมูลชุดใหม่"
+              : "🔄 อัปเดตจาก AI (MCP) หรือแหล่งอื่นแล้ว"
+          );
+          setTimeout(() => setAiNotice(""), histLost ? 6000 : 3000);
         } catch {
           // เงียบ — รอบหน้าลองใหม่
         }
@@ -1602,6 +1728,25 @@ function Designer({
     const t = setTimeout(() => {
       trySave(dataKey(cur), JSON.stringify({ nodes, edges }));
       diagramsMap.current[cur] = { nodes, edges };
+      // กวาดเส้นค้างในแท็บอื่นที่ชี้มาหา node/field ที่ถูกลบ — ทำตรงนี้ที่เดียว (ทุกทางลบผ่าน autosave)
+      // เขียนขึ้น server ไปกับ payload เดียวกับ save ปกติ = ใช้ rev/409 เดิม ไม่มีเส้นทางเขียนใหม่
+      // guard: เห็นครบทุกแท็บเท่านั้น (โหมด offline แท็บที่ยังไม่เคยเปิดไม่อยู่ใน map — universe ไม่ครบ ห้ามกวาด)
+      if (tabs.every((tb) => diagramsMap.current[tb.id])) {
+        const swept = sweepCrossTabEdges(diagramsMap.current, cur);
+        if (swept.removed) {
+          for (const tid of swept.tabIds)
+            trySave(dataKey(tid), JSON.stringify(diagramsMap.current[tid]));
+          setAllDiagrams({ ...diagramsMap.current }); // crossref stub/lint คำนวณใหม่ทันที
+          const names = swept.tabIds
+            .map((tid) => tabs.find((tb) => tb.id === tid)?.name ?? tid)
+            .join(", ");
+          // undo (Ctrl+Z) เป็น history ต่อ diagram ปัจจุบันเท่านั้น — เส้นที่กวาดในแท็บอื่นไม่คืน ต้องบอกตรงๆ
+          setSweepNotice(
+            `ลบเส้นข้ามแท็บที่ค้าง ${swept.removed} เส้น (แท็บ: ${names}) — ปลายทางถูกลบไปแล้ว · Ctrl+Z ไม่คืนเส้นนี้ (กู้ได้ผ่าน MCP list_revisions/restore_revision)`
+          );
+          setTimeout(() => setSweepNotice(""), 6000);
+        }
+      }
       const payload = JSON.stringify({ tabs, cur, diagrams: diagramsMap.current });
       if (payload !== lastPayload.current) void pushToServer(payload);
     }, 400);
@@ -1781,24 +1926,31 @@ function Designer({
       { label: string; tabId: string; tabName: string; handles: Set<string>; src?: CollectionNode }
     >();
     for (const e of edges) {
-      if (here.has(e.target)) continue;
-      const hit = byTarget.get(e.target);
-      if (hit) {
-        if (e.targetHandle) hit.handles.add(e.targetHandle);
-        continue;
-      }
-      for (const t of tabs) {
-        if (t.id === cur) continue;
-        const tn = allDiagrams[t.id]?.nodes.find((n) => n.id === e.target);
-        if (!tn) continue;
-        byTarget.set(e.target, {
-          label: tn.data.label,
-          tabId: t.id,
-          tabName: t.name,
-          handles: new Set(e.targetHandle ? [e.targetHandle] : []),
-          src: curNodes.find((n) => n.id === e.source),
-        });
-        break;
+      // ปกติ source อยู่แท็บนี้เสมอ (เส้นเก็บใน diagram ต้นทาง) แต่ข้อมูลเก่าก่อนแก้ move_collection
+      // อาจมีเส้นค้างที่ source อยู่แท็บอื่น — สร้าง stub ให้ทั้งสองข้าง ไม่งั้นเส้นหายเงียบ
+      for (const end of [
+        { id: e.target, handle: e.targetHandle, anchorId: e.source },
+        { id: e.source, handle: e.sourceHandle, anchorId: e.target },
+      ]) {
+        if (here.has(end.id)) continue;
+        const hit = byTarget.get(end.id);
+        if (hit) {
+          if (end.handle) hit.handles.add(end.handle);
+          continue;
+        }
+        for (const t of tabs) {
+          if (t.id === cur) continue;
+          const tn = allDiagrams[t.id]?.nodes.find((n) => n.id === end.id);
+          if (!tn) continue;
+          byTarget.set(end.id, {
+            label: tn.data.label,
+            tabId: t.id,
+            tabName: t.name,
+            handles: new Set(end.handle ? [end.handle] : []),
+            src: curNodes.find((n) => n.id === end.anchorId),
+          });
+          break;
+        }
       }
     }
     return [...byTarget.entries()].map(
@@ -1830,7 +1982,8 @@ function Designer({
     // ลำดับเส้นต่อการ์ดต้นทาง — เส้นที่ออกจากการ์ดเดียวกันวิ่งขนานกัน ป้ายจึงกองทับ ใช้เลื่อนแยก
     const laneOf = new Map<string, number>();
     const mapped = edges.map((e) => {
-      const src = nodes.find((n) => n.id === e.source);
+      // source ปกติอยู่แท็บนี้ — fallback หา stub เผื่อเส้นเก่าค้างผิด diagram (source อยู่แท็บอื่น)
+      const src = nodes.find((n) => n.id === e.source) ?? crossNodes.find((n) => n.id === e.source);
       // auto-side: ทุก field มี handle ซ้าย/ขวา — เลือกข้างที่หันเข้าหากันตามตำแหน่ง node (ลาก node แล้วเส้นสลับข้างเอง ไม่อ้อมหลังการ์ด); ข้อมูลเก็บ canonical -s/-t เสมอ
       let sh = e.sourceHandle;
       let th = e.targetHandle;
@@ -2122,7 +2275,7 @@ function Designer({
         : codeTab === "Mongoose"
         ? toMongoose(gn, ge, allGn)
         : codeTab === "TypeScript"
-          ? toTypeScript(gn, ge)
+          ? toTypeScript(gn, ge, allGn)
           : codeTab === "Markdown"
             ? toMarkdown(gn, ge, allGn)
             : codeTab === "Wiki"
@@ -2270,7 +2423,14 @@ function Designer({
       {/* toast — auto refresh หลัง AI/แหล่งอื่นแก้ project */}
       {aiNotice && (
         <div className="border-b border-emerald-900 bg-emerald-950 px-4 py-1.5 text-xs text-emerald-300">
-          🔄 อัปเดตจาก AI (MCP) หรือแหล่งอื่นแล้ว
+          {aiNotice}
+        </div>
+      )}
+
+      {/* toast — กวาดเส้นข้ามแท็บที่ค้างหลังลบ node/field (รายงานเสมอ ห้ามลบเงียบ) */}
+      {sweepNotice && (
+        <div className="border-b border-amber-900 bg-amber-950 px-4 py-1.5 text-xs text-amber-300">
+          🧹 {sweepNotice}
         </div>
       )}
 
@@ -2284,9 +2444,10 @@ function Designer({
       {externalEdit && (
         <div className="flex items-center gap-2 border-b border-yellow-900 bg-yellow-950 px-4 py-1.5 text-xs text-yellow-300">
           <span className="flex-1">
-            diagram อาจถูกแก้จาก AI (ผ่าน MCP) หรือแท็บอื่น — โหลดจาก server ก่อนแก้ต่อเพื่อกันงานทับกัน
+            ⚠ การแก้ล่าสุด<b>ยังไม่ถูกบันทึกขึ้น server</b> — มีการแก้จาก AI (MCP) หรือแท็บอื่นชนกัน
+            ให้เลือกทางใดทางหนึ่งก่อนแก้ต่อ
           </span>
-          {/* การแก้ที่ชน (409) ไม่ถูก auto ทับ — ทับได้เฉพาะเมื่อผู้ใช้กดปุ่มนี้เอง */}
+          {/* การแก้ที่ชน (409) ไม่ถูก auto ทับ — ผู้ใช้ต้องเลือกเองว่าเอาของฝั่งไหน */}
           <button
             className="shrink-0 rounded border border-yellow-700 px-2 py-0.5 hover:text-yellow-100"
             title="โหลดข้อมูลล่าสุดจาก server มาแทน (การแก้ในเครื่องที่ชนกันจะถูกทิ้ง)"
@@ -2296,11 +2457,21 @@ function Designer({
               void bootstrap();
             }}
           >
-            🔄 โหลดจาก server
+            🔄 ใช้ของ server (ทิ้งของในเครื่อง)
+          </button>
+          <button
+            className="shrink-0 rounded border border-yellow-700 px-2 py-0.5 hover:text-yellow-100"
+            title="บันทึกของในเครื่องทับ server (การแก้จาก AI/แท็บอื่นที่ชนกันจะถูกทิ้ง)"
+            onClick={() => {
+              saveNow();
+              pushToServer(JSON.stringify({ tabs, cur, diagrams: diagramsMap.current }), true);
+            }}
+          >
+            💾 ใช้ของในเครื่อง (ทับ server)
           </button>
           <button
             className="shrink-0 hover:text-yellow-100"
-            title="ปิดแถบเตือน"
+            title="ปิดแถบเตือน (ยังไม่บันทึกจนกว่าจะเลือก)"
             onClick={() => setExternalEdit(false)}
           >
             ✕
@@ -2384,8 +2555,15 @@ function Designer({
             if ((n.type as string) === "crossref" && n.data.crossTabId) openDiagram(n.data.crossTabId);
           }}
           onBeforeDelete={async ({ nodes: del }) => {
-            // คอลเลกชันที่มีงานจริง (>1 ฟิลด์) ต้อง confirm ก่อนลบ — ครอบทั้งปุ่ม ✕ และ Delete key
-            const big = del.find((n) => n.data.fields.length > 1);
+            // คอลเลกชันที่ "มีงานจริง" ต้อง confirm ก่อนลบ — ครอบทั้งปุ่ม ✕ และ Delete key
+            // ไม่ดูแค่จำนวนฟิลด์: การ์ดที่มีแค่ _id แต่ใส่คำอธิบาย/ธง key/enum ไว้แล้ว = งานที่ตั้งใจทำ ห้ามหายเงียบ
+            const hasWork = (n: CollectionNode) =>
+              n.data.fields.length > 1 ||
+              !!n.data.description?.trim() ||
+              n.data.fields.some(
+                (f) => f.key || f.sessionkey || f.keygroup || f.unique || f.enum?.length || f.description?.trim()
+              );
+            const big = del.find(hasWork);
             return !big || window.confirm(`ลบคอลเลกชัน "${big.data.label}"?`);
           }}
           onNodeMouseEnter={(_, n) => setHoveredId(n.id)}
@@ -2398,6 +2576,9 @@ function Designer({
           // 48 (ค่าเดิม) กว้างกว่าระยะระหว่าง handle เอง — source กับ target ของ field เดียวกันห่างแค่ 14px
           // และแถวถัดไปห่าง ~39px จึงคว้า handle ตัวอื่นแทนตัวที่กด (เส้นออกผิดจุด) 10 = แคบกว่าครึ่งของ 14
           connectionRadius={10}
+          // การ์ด collection สูงได้ไม่จำกัด (field เยอะ+ซ้อนลึก = สูงหลายพัน px) — default minZoom 0.5
+          // ทำให้ Fit View/Zoom Out ติดเพดาน มองไม่เห็นทั้งผัง (กดแล้วจอไม่ขยับเลย)
+          minZoom={0.05}
           defaultEdgeOptions={{
             type: "rel",
             animated: true,
@@ -2459,7 +2640,8 @@ function Designer({
                         >
                           <div className="truncate text-[11px]">
                             {n.data.label}
-                            <span className="ml-1.5 text-[9px] text-slate-600">{n.data.fields.length}</span>
+                            {/* วงเล็บกันอ่านติดกับชื่อ ("สินค้า3" ดูเหมือน rename เป็นสินค้า3) */}
+                            <span className="ml-1.5 text-[9px] text-slate-500">({n.data.fields.length} ฟิลด์)</span>
                           </div>
                           {n.data.description && (
                             <div className="truncate text-[9px] text-slate-500" title={n.data.description}>
@@ -2662,6 +2844,7 @@ function ProjectHome({
   const [newName, setNewName] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
+  const [confirmDel, setConfirmDel] = useState<string | null>(null); // modal ยืนยันลบ (native confirm โดน auto-dismiss ในบางบริบท = กดแล้วเงียบ)
   const [error, setError] = useState("");
   const importInput = useRef<HTMLInputElement>(null);
   const lastWsRev = useRef(0); // workspace rev ล่าสุด — ส่ง ?rev= ตอน poll (204 = ไม่ต้องทำอะไร)
@@ -2674,6 +2857,15 @@ function ProjectHome({
       const json = await res.json();
       if (typeof json.rev === "number") lastWsRev.current = json.rev;
       let projects = (json.projects ?? []) as ProjectSummary[];
+      // คงลำดับที่แสดงอยู่เดิม (server เรียงตาม updatedAt — ถ้า AI/คนอื่นแก้โปรเจกต์อื่นระหว่าง poll
+      // การ์ดจะสลับตำแหน่งใต้เมาส์แล้วคลิกพลาด) — รายการใหม่ต่อท้ายตามลำดับ server
+      const keepOrder = (prev: ProjectSummary[] | null, next: ProjectSummary[]) => {
+        if (!prev) return next;
+        const idx = new Map(prev.map((x, i) => [x.name, i]));
+        return [...next].sort(
+          (a, b) => (idx.get(a.name) ?? Infinity) - (idx.get(b.name) ?? Infinity)
+        );
+      };
       // migrate ครั้งแรก — server ว่าง + localStorage เคยมีงาน + ยังไม่เคย sync → ยกขึ้นเป็น project "default"
       if (
         projects.length === 0 &&
@@ -2697,7 +2889,7 @@ function ProjectHome({
         projects = ((await (await fetch("/api/projects")).json()).projects ??
           []) as ProjectSummary[];
       }
-      setList(projects);
+      setList((prev) => keepOrder(prev, projects));
       setOffline(false);
     } catch {
       setOffline(true);
@@ -2747,8 +2939,10 @@ function ProjectHome({
     void load();
   };
 
+  // ลบจริงหลังยืนยันใน modal ของแอปเอง — native confirm() แสดงผลไม่คงเส้นคงวา (automation/บาง browser
+  // auto-dismiss เงียบ) ผู้ใช้กดปุ่มลบแล้วไม่เห็นอะไรเกิดขึ้นเลย
   const del = async (name: string) => {
-    if (!confirm(`ลบโปรเจกต์ "${name}" ถาวร? (ทุก diagram ในนั้นหายหมด)`)) return;
+    setConfirmDel(null);
     await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: "DELETE" });
     void load();
   };
@@ -2906,7 +3100,7 @@ function ProjectHome({
                     <button
                       className="text-slate-600 hover:text-red-400"
                       title="ลบโปรเจกต์"
-                      onClick={() => void del(p.name)}
+                      onClick={() => setConfirmDel(p.name)}
                     >
                       🗑
                     </button>
@@ -2923,6 +3117,36 @@ function ProjectHome({
           </>
         )}
       </div>
+
+      {/* modal ยืนยันลบโปรเจกต์ — ของแอปเอง ไม่ใช้ native confirm (แสดงผลไม่คงเส้นคงวา/ถูก auto-dismiss ได้) */}
+      {confirmDel !== null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+          onClick={() => setConfirmDel(null)}
+        >
+          <div className="mm-panel w-full max-w-sm p-5 text-sm" onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-2 font-semibold text-slate-100">ลบโปรเจกต์ “{confirmDel}” ?</h3>
+            <p className="mb-4 text-xs leading-relaxed text-slate-400">
+              ลบถาวร — ทุก diagram ในโปรเจกต์นี้หายหมด
+              (กู้คืนได้ทาง MCP เท่านั้น: list_revisions → restore_revision)
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-slate-300 hover:bg-slate-800"
+                onClick={() => setConfirmDel(null)}
+              >
+                ยกเลิก
+              </button>
+              <button
+                className="rounded-lg bg-red-600 px-3 py-1.5 font-medium text-white hover:bg-red-500"
+                onClick={() => void del(confirmDel)}
+              >
+                🗑 ลบถาวร
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2993,6 +3217,19 @@ function App() {
   const [project, setProject] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [wiki, setWiki] = useState<string | null>(null); // โปรเจกต์ที่เปิด wiki อยู่
+
+  // deep link: /?project=<ชื่อ> — bookmark/refresh แล้วกลับเข้าโปรเจกต์เดิมได้เลย
+  // (client component — อ่าน URL ได้หลัง mount เท่านั้น; ชื่อไม่ถูกต้อง bootstrap จะพากลับหน้าเลือกเอง)
+  // defer 1 tick กัน setState กลาง effect flush (pattern เดียวกับ bootstrap)
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("project");
+    if (!q) return;
+    const t = setTimeout(() => setProject(q), 0);
+    return () => clearTimeout(t);
+  }, []);
+  useEffect(() => {
+    window.history.replaceState(null, "", project ? `/?project=${encodeURIComponent(project)}` : "/");
+  }, [project]);
   // เปิด designer ของโปรเจกต์เดียวกับ wiki → แสดงข้างกัน (split) ไม่ใช่ทับเต็มจอ
   const split = wiki !== null && wiki === project && !offline;
   // toggle — ปุ่ม 📖 Wiki บน toolbar กดซ้ำ = ปิด
