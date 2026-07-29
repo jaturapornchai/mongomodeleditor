@@ -11,7 +11,9 @@ services:
     build: .
     container_name: mongomodel
     ports:
-      - "3100:3100"
+      # ผูก 127.0.0.1 เท่านั้น — /mcp กับ /api ไม่มี auth (ลบทั้ง project ได้) ห้ามเปิดให้ทั้ง LAN ยิง
+      # ถ้าต้องการเปิดออก LAN จริง: เปลี่ยนเป็น "3100:3100" แล้วยอมรับว่าทุกเครื่องในวงแก้/ลบข้อมูลได้
+      - "127.0.0.1:3100:3100"
     volumes:
       - ./data:/app/data
     restart: unless-stopped

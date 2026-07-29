@@ -3,6 +3,7 @@
 // PATCH { name } → เปลี่ยนชื่อ · DELETE → ลบ project
 
 import {
+  RevConflictError,
   getProject,
   saveProject,
   renameProject,
@@ -39,12 +40,25 @@ export async function PUT(req: Request, ctx: Ctx) {
   if (!Array.isArray(b.tabs) || typeof b.diagrams !== "object" || b.diagrams === null) {
     return Response.json({ error: "ต้องมี tabs (array) และ diagrams (object)" }, { status: 400 });
   }
-  const rev = await saveProject(decodeURIComponent(name), {
-    tabs: b.tabs as ProjectData["tabs"],
-    cur: typeof b.cur === "string" ? b.cur : "",
-    diagrams: b.diagrams as ProjectData["diagrams"],
-  });
-  return Response.json({ rev });
+  // expectedRev (ถ้าส่งมา) = rev ที่ client ถืออยู่ — ไม่ตรงแปลว่ามีคนอื่น (แท็บอื่น/AI ผ่าน MCP)
+  // แก้ไปแล้ว ต้องให้ client รีเฟรชก่อน ไม่ใช่เขียนทับงานเขาหายเงียบ
+  try {
+    const rev = await saveProject(
+      decodeURIComponent(name),
+      {
+        tabs: b.tabs as ProjectData["tabs"],
+        cur: typeof b.cur === "string" ? b.cur : "",
+        diagrams: b.diagrams as ProjectData["diagrams"],
+      },
+      typeof b.expectedRev === "number" ? b.expectedRev : undefined,
+    );
+    return Response.json({ rev });
+  } catch (e) {
+    if (e instanceof RevConflictError) {
+      return Response.json({ error: e.message, current: e.current }, { status: 409 });
+    }
+    throw e;
+  }
 }
 
 export async function PATCH(req: Request, ctx: Ctx) {
@@ -63,7 +77,9 @@ export async function PATCH(req: Request, ctx: Ctx) {
     await renameProject(decodeURIComponent(name), newName.trim());
     return Response.json({ ok: true });
   } catch (e) {
-    return Response.json({ error: String((e as Error).message) }, { status: 404 });
+    const msg = String((e as Error).message);
+    // ชื่อใหม่ซ้ำ = 409 (แพทเทิร์นเดียวกับ POST ชื่อซ้ำ / PUT rev ชน) · ไม่พบ project เดิม = 404
+    return Response.json({ error: msg }, { status: msg.includes("[DUPLICATE_PROJECT]") ? 409 : 404 });
   }
 }
 
