@@ -1084,7 +1084,7 @@ function walkFields(fields: Field[], path = ""): [string, Field][] {
  * `.` → validator กับ index ชี้ไป nested path แทนฟิลด์จริง · `$` → createIndex/createCollection ล้ม
  * backtick/quote/newline → struct tag ของ Go พังหรืออ่านไม่ออก · `\0` → ชื่อ collection ใช้ไม่ได้
  */
-const BAD_NAME_CHARS = /[.$`"\\\r\n\t\0]/;
+export const BAD_NAME_CHARS = /[.$`"\\\r\n\t\0]/; // export ให้ UI เตือนสดตอนพิมพ์ (FieldRow) — กฎเดียวกับ lint
 
 export function lintModel(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode[]): LintIssue[] {
   const issues: LintIssue[] = [];

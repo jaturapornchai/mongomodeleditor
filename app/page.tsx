@@ -59,6 +59,7 @@ import {
   toWiki,
   isThaiText,
   keyGroupsOf,
+  BAD_NAME_CHARS,
   demo,
 } from "./schema";
 
@@ -85,8 +86,8 @@ type DiagramMeta = { id: string; name: string };
 
 // สถานะ popup ป้อนรายละเอียด (แทน window.prompt)
 type EditState =
-  | { kind: "collDesc"; text: string }
-  | { kind: "fieldDesc"; fid: string; name: string; text: string }
+  | { kind: "collDesc"; text: string; orig: string }
+  | { kind: "fieldDesc"; fid: string; name: string; text: string; orig: string }
   | { kind: "enumDefault"; fid: string; name: string; enumText: string; def: string }
   | { kind: "keyGroup"; fid: string; name: string; text: string };
 
@@ -94,6 +95,16 @@ const uid = () => crypto.randomUUID().slice(0, 8);
 const INDEX_KEY = "mongomodel:index";
 const LEGACY_KEY = "mongomodel";
 const dataKey = (id: string) => `mongomodel:d:${id}`;
+// viewport (zoom/pan) ล่าสุดต่อ diagram — เปิดกลับมาอยู่ที่เดิม ไม่รีเซ็ตเป็น fit view เสมอ
+const vpKey = (id: string) => `mongomodel:vp:${id}`;
+const loadVp = (id: string): { x: number; y: number; zoom: number } | null => {
+  try {
+    const v = JSON.parse(localStorage.getItem(vpKey(id)) ?? "null");
+    return v && typeof v.x === "number" && typeof v.y === "number" && typeof v.zoom === "number" ? v : null;
+  } catch {
+    return null;
+  }
+};
 // flag ครั้งแรกที่ sync ขึ้น server แล้ว — กัน migrate ซ้ำ (server ว่างหลังเคย sync = ว่างจริง)
 const SYNCED_KEY = "mongomodel:server-synced";
 
@@ -309,7 +320,9 @@ function FieldRow({
       ? "ชื่อว่าง"
       : siblings.some((o) => o.id !== f.id && o.name === f.name)
         ? "ชื่อซ้ำ"
-        : "";
+        : BAD_NAME_CHARS.test(f.name)
+          ? 'มีอักขระต้องห้าม (. $ ` " \\ แท็บ/ขึ้นบรรทัด) — โค้ดที่ generate จะพัง'
+          : "";
   return (
     <>
       <div className="relative flex items-center gap-1.5">
@@ -342,6 +355,7 @@ function FieldRow({
           {f.keygroup && <span title={`สมาชิก key ผสม (กลุ่ม "${f.keygroup}") — รวมกับ field อื่นในกลุ่มเป็น key เดียว`}>⛓</span>}
           {!isPK && (
             <button
+              tabIndex={-1}
               className={`nodrag font-bold ${f.required ? "text-red-400" : "text-slate-600 hover:text-slate-400"}`}
               title={f.required ? "จำเป็นต้องมี (คลิกเพื่อยกเลิก)" : "ไม่บังคับ (คลิกเพื่อบังคับ)"}
               onClick={() => onPatch(f.id, { required: !f.required })}
@@ -353,6 +367,7 @@ function FieldRow({
         {/* พับ/ขยายฟิลด์ย่อย — เฉพาะชนิดที่มีลูกได้ */}
         {nest && (
           <button
+            tabIndex={-1}
             className="nodrag w-3 shrink-0 text-center text-slate-400 hover:text-slate-200"
             title={f.collapsed ? "ขยายฟิลด์ย่อย" : "พับฟิลด์ย่อย"}
             onClick={() => onPatch(f.id, { collapsed: !f.collapsed })}
@@ -369,6 +384,30 @@ function FieldRow({
           placeholder="ชื่อฟิลด์"
           title={nameErr || undefined}
           onChange={(e) => onPatch(f.id, { name: e.target.value })}
+          // จำค่าตอนเริ่มแก้ — Esc คืนค่าเดิม (ความเคยชินสากล เหมือนช่องชื่อ collection)
+          onFocus={(e) => {
+            e.currentTarget.dataset.orig = f.name;
+          }}
+          // trim ช่องว่าง/แท็บหัวท้ายอัตโนมัติ (paste จาก Excel มักติดมา) — แบบเดียวกับชื่อ collection
+          onBlur={(e) => {
+            const t = e.currentTarget.value.trim();
+            if (t !== e.currentTarget.value) onPatch(f.id, { name: t });
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              onPatch(f.id, { name: e.currentTarget.dataset.orig ?? f.name });
+              e.currentTarget.blur();
+            } else if (e.key === "Enter") {
+              // Enter = ยืนยัน + กระโดดไปช่องชื่อฟิลด์แถวถัดไป (สไตล์ Excel/Sheets)
+              e.stopPropagation();
+              const idx = siblings.findIndex((s) => s.id === f.id);
+              const next = siblings[idx + 1];
+              e.currentTarget.blur();
+              if (next)
+                document.querySelector<HTMLInputElement>(`input[data-fid="${next.id}"]`)?.focus();
+            }
+          }}
         />
         <span className="w-5 shrink-0 text-center text-[10px] text-slate-500" title={f.type}>
           {TYPE_ICON[f.type] ?? "?"}
@@ -416,6 +455,7 @@ function FieldRow({
         {/* actions รอง — ค้างตลอด ไม่ซ่อนตอน hover (กันจอกระตุกตอนเลื่อน) */}
         {top && (
           <button
+            tabIndex={-1}
             className={`nodrag shrink-0 text-[10px] ${
               f.enum?.length || f.default != null ? "text-sky-300" : "text-slate-500 hover:text-slate-300"
             }`}
@@ -427,8 +467,9 @@ function FieldRow({
         )}
         {top && (
           <button
+            tabIndex={-1}
             className={`nodrag shrink-0 text-[10px] ${
-              f.key ? "opacity-100" : "opacity-30 hover:opacity-70"
+              f.key ? "opacity-100" : "opacity-60 hover:opacity-100"
             }`}
             title={f.key ? "business key — collection อื่นอ้างอิง field นี้ (คลิกเพื่อยกเลิก)" : "ตั้งเป็น business key (🔑) — จะติ๊ก * บังคับกรอกให้อัตโนมัติ (ยกเลิกเองได้)"}
             // key ที่ปล่อยว่างได้ = หลายเอกสารไม่มีค่า key แล้วอ้างอิงหาไม่เจอ — ติ๊ก required ให้เลย (ผู้ใช้กด * ถอดเองได้)
@@ -439,8 +480,9 @@ function FieldRow({
         )}
         {top && (
           <button
+            tabIndex={-1}
             className={`nodrag shrink-0 text-[10px] ${
-              f.sessionkey ? "opacity-100" : "opacity-30 hover:opacity-70"
+              f.sessionkey ? "opacity-100" : "opacity-60 hover:opacity-100"
             }`}
             title={f.sessionkey ? "session key — tenant scope (คลิกเพื่อยกเลิก)" : "ตั้งเป็น session key (🌐)"}
             onClick={() => onPatch(f.id, { sessionkey: !f.sessionkey })}
@@ -450,8 +492,9 @@ function FieldRow({
         )}
         {top && (
           <button
+            tabIndex={-1}
             className={`nodrag shrink-0 text-[10px] ${
-              f.keygroup ? "text-sky-300 opacity-100" : "opacity-30 hover:opacity-70"
+              f.keygroup ? "text-sky-300 opacity-100" : "opacity-60 hover:opacity-100"
             }`}
             title={f.keygroup ? `key ผสม กลุ่ม "${f.keygroup}" (คลิกเพื่อแก้/ออกจากกลุ่ม)` : "ตั้ง key ผสม — หลาย field รวมเป็น key เดียว (⛓)"}
             onClick={() => onEditKeyGroup(f)}
@@ -461,6 +504,7 @@ function FieldRow({
         )}
         {top && (
           <button
+            tabIndex={-1}
             className={`nodrag shrink-0 text-[10px] font-bold ${
               f.unique ? "text-amber-300" : "text-slate-600 hover:text-slate-400"
             }`}
@@ -473,6 +517,7 @@ function FieldRow({
         {/* array ของ object เท่านั้น — ยืนยันว่ามีขอบเขต (ไม่โตไม่จำกัดจนชนเพดานเอกสาร 16MB) */}
         {f.type === "Array" && (f.of === "Object" || (f.children?.length ?? 0) > 0) && (
           <button
+            tabIndex={-1}
             className={`nodrag shrink-0 text-[10px] ${
               f.bounded ? "text-emerald-300" : "text-slate-600 hover:text-slate-400"
             }`}
@@ -487,6 +532,7 @@ function FieldRow({
           </button>
         )}
         <button
+          tabIndex={-1}
           className={`nodrag shrink-0 text-[10px] ${
             f.description && isThaiText(f.description)
               ? "opacity-90"
@@ -503,6 +549,7 @@ function FieldRow({
         </button>
         {top && onDuplicate && (
           <button
+            tabIndex={-1}
             className="nodrag shrink-0 text-[10px] text-slate-600 hover:text-sky-300"
             title="ทำซ้ำฟิลด์นี้ (คัดลอกชื่อ/ชนิด/ตัวเลือกทั้งหมด)"
             onClick={() => onDuplicate(f.id)}
@@ -511,6 +558,7 @@ function FieldRow({
           </button>
         )}
         <button
+          tabIndex={-1}
           className="nodrag text-slate-600 hover:text-red-400"
           title="ลบฟิลด์"
           onClick={() => onRemove(f.id)}
@@ -837,11 +885,23 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
   // เปิด popup ป้อนรายละเอียด (แทน window.prompt) — ล้าง error เก่าทุกครั้งที่เปิด
   const editDescription = () => {
     setEditError("");
-    setEditing({ kind: "collDesc", text: data.description ?? "" });
+    setEditing({ kind: "collDesc", text: data.description ?? "", orig: data.description ?? "" });
   };
   const editFieldDescription = (f: Field) => {
     setEditError("");
-    setEditing({ kind: "fieldDesc", fid: f.id, name: f.name, text: f.description ?? "" });
+    setEditing({ kind: "fieldDesc", fid: f.id, name: f.name, text: f.description ?? "", orig: f.description ?? "" });
+  };
+
+  // ปิด popup จากพื้นหลัง/Esc — ถ้าพิมพ์คำอธิบายค้างไว้ (ต่างจากค่าเดิม) ต้องถามก่อนทิ้ง
+  const closeEditing = () => {
+    if (
+      editing &&
+      (editing.kind === "collDesc" || editing.kind === "fieldDesc") &&
+      editing.text !== editing.orig &&
+      !window.confirm("มีข้อความที่ยังไม่บันทึก — ทิ้งข้อความที่พิมพ์ไว้?")
+    )
+      return;
+    setEditing(null);
   };
   const editEnumDefault = (f: Field) =>
     setEditing({
@@ -886,13 +946,15 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
     <div
       className={`mm-card w-full min-w-[22rem] border text-xs ${selected ? "mm-card-selected border-sky-400/70" : "border-white/10"}`}
     >
-      {/* ลากขอบขวาปรับความกว้าง (สูง auto, width เก็บถาวรใน node) */}
+      {/* ลากขอบขวาปรับความกว้าง (สูง auto, width เก็บถาวรใน node)
+          ไม่ใช้ prop color — มันตั้ง borderColor เป็น inline style ทำให้ CSS โชว์แถบตอน hover ไม่ได้
+          (สไตล์ทั้งหมดอยู่ที่ .mm-resize ใน globals.css: hitbox กว้างขึ้น + แถบสีตอน hover การ์ด) */}
       <NodeResizeControl
         variant={ResizeControlVariant.Line}
         position="right"
         minWidth={352}
         maxWidth={1000}
-        color="#38bdf8"
+        className="mm-resize"
       />
 
       {/* หัวคอลเลกชัน */}
@@ -907,18 +969,37 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
             className="nodrag w-0 flex-1 rounded bg-blue-950 px-1 py-0.5 text-sm font-semibold text-slate-100 outline-none ring-1 ring-sky-500"
             autoFocus
             defaultValue={data.label}
-            onFocus={(e) => e.currentTarget.select()}
+            onFocus={(e) => {
+              // จำชื่อเดิมไว้ — Esc คืนค่า และใช้เทียบตอน blur ว่า rename ไปชนชื่อซ้ำไหม
+              e.currentTarget.dataset.orig = data.label;
+              e.currentTarget.select();
+            }}
             onMouseDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
+            // commit เข้า state ทันทีทุกตัวอักษร (ไม่รอ blur) — ปิดแท็บกลางคันข้อความไม่หาย
+            // และ labelErr โชว์กรอบแดงสดเมื่อพิมพ์ชนชื่อซ้ำ
+            onChange={(e) => updateNodeData(id, { label: e.currentTarget.value })}
             onBlur={(e) => {
-              updateNodeData(id, { label: e.currentTarget.value.trim() });
+              const orig = e.currentTarget.dataset.orig ?? data.label;
+              const v = e.currentTarget.value.trim();
+              // ห้าม rename ชนชื่อ collection อื่นในผังเดียวกัน — กฎเดียวกับตอนเพิ่มใหม่/add_collection ฝั่ง MCP
+              // (ปล่อยผ่านแล้วผู้ใช้จะไปเจอสคริปต์พังเงียบๆ ตอนสร้างโค้ด)
+              if (v !== orig && labels.filter((l) => l === v).length > 1) {
+                updateNodeData(id, { label: orig });
+                setEditingLabel(false);
+                window.alert(`มีคอลเลกชันชื่อ "${v}" อยู่แล้วในแท็บนี้ — ใช้ชื่อซ้ำไม่ได้ (คืนชื่อเดิม "${orig}")`);
+                return;
+              }
+              updateNodeData(id, { label: v });
               setEditingLabel(false);
             }}
             onKeyDown={(e) => {
               e.stopPropagation(); // กัน react flow / คีย์ลัด global จับ
               if (e.key === "Enter") e.currentTarget.blur();
               else if (e.key === "Escape") {
-                e.currentTarget.value = data.label; // ยกเลิก = คืนค่าเดิมก่อน blur commit
+                const orig = e.currentTarget.dataset.orig ?? data.label;
+                e.currentTarget.value = orig; // ยกเลิก = คืนค่าเดิมก่อน blur commit
+                updateNodeData(id, { label: orig });
                 e.currentTarget.blur();
               }
             }}
@@ -1068,13 +1149,13 @@ function CollectionNodeView({ id, data, selected }: NodeProps<CollectionNode>) {
         createPortal(
           <div
             className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-6"
-            onClick={() => setEditing(null)}
+            onClick={closeEditing}
           >
             <div
               className="mm-panel w-full max-w-md p-5 text-sm"
               onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
-                if (e.key === "Escape") setEditing(null);
+                if (e.key === "Escape") closeEditing();
               }}
             >
               <h3 className="mb-3 font-semibold text-slate-100">
@@ -1456,6 +1537,16 @@ function Designer({
   const [externalEdit, setExternalEdit] = useState(false);
   const [aiNotice, setAiNotice] = useState(""); // toast หลัง auto refresh — ข้อความบอกด้วยว่าประวัติ undo ถูกล้างไหม
   const [sweepNotice, setSweepNotice] = useState(""); // toast แจ้งกวาดเส้นค้างในแท็บอื่นหลังลบ node/field (ห้ามลบเงียบ)
+  // เมนูคลิกขวาของแอป (การ์ด/เส้น/พื้นที่ว่าง) — ความเคยชินจาก Figma/Explorer
+  const [ctxMenu, setCtxMenu] = useState<
+    | ({ x: number; y: number } & ({ kind: "node"; id: string } | { kind: "edge"; id: string } | { kind: "pane" }))
+    | null
+  >(null);
+  const [histOpen, setHistOpen] = useState(false); // modal ประวัติการแก้ไข (snapshot ฝั่ง server)
+  const [revisions, setRevisions] = useState<{ rev: number; savedAt: string }[] | null>(null);
+  const [tbOverflow, setTbOverflow] = useState(false); // toolbar ล้นขวา — โชว์ตัวบอก » ว่ายังมีปุ่มซ่อนอยู่
+  const copyRef = useRef<CollectionNode | null>(null); // clipboard ภายในแอป — Ctrl+C เก็บการ์ด, Ctrl+V วางสำเนา
+  const toolbarRef = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const loadedId = useRef(""); // diagram id ที่โหลดเข้า state แล้ว (กัน autosave ก่อนโหลด)
@@ -1472,7 +1563,8 @@ function Designer({
   // แล้ว save/poll ค้างทั้งเซสชัน (การแก้หลังจากนั้นดูเหมือนสำเร็จบนจอแต่ไม่ถูกบันทึกจริง)
   const putChain = useRef<Promise<void>>(Promise.resolve());
   const saving = useRef(false); // PUT กำลังวิ่ง — poll ห้ามตีความ rev ที่ขยับว่าเป็นของคนอื่น
-  const { fitView, getViewport, setViewport, getInternalNode } = useReactFlow();
+  const { fitView, getViewport, setViewport, getInternalNode, deleteElements, screenToFlowPosition } =
+    useReactFlow<CollectionNode>();
 
   // Ctrl+wheel / Ctrl+ลากซ้าย = scroll/แพนจออิสระ (wheel ธรรมดา = zoom, ลากซ้ายธรรมดา = กรอบเลือก เหมือนเดิม)
   // ทำเองที่ capture phase ของ root — d3-zoom/selection ของ React Flow ไม่ครอบ gesture นี้
@@ -1484,6 +1576,14 @@ function Designer({
 
     const onWheel = (e: Event) => {
       const we = e as WheelEvent;
+      // Shift+wheel = แพนแนวนอน (convention เดียวกับ Excel/Figma/เบราว์เซอร์) — wheel ธรรมดายัง zoom เหมือนเดิม
+      if (we.shiftKey && !we.ctrlKey) {
+        we.preventDefault();
+        we.stopImmediatePropagation();
+        const vp = getViewport();
+        setViewport({ x: vp.x - (we.deltaY + we.deltaX), y: vp.y, zoom: vp.zoom });
+        return;
+      }
       if (!we.ctrlKey) return;
       we.preventDefault();
       we.stopImmediatePropagation();
@@ -1549,8 +1649,18 @@ function Designer({
     present.current = serializeSnapshot(d.nodes, d.edges);
     skipHistory.current = false;
     syncHistSizes();
-    // preserveView = auto refresh จาก server — ไม่ fitView กันจอเด้ง
-    if (!preserveView) setTimeout(() => fitView({ padding: 0.2 }), 50);
+    // preserveView = auto refresh จาก server — ไม่แตะมุมมองกันจอเด้ง
+    if (!preserveView) {
+      // มี viewport ที่จำไว้ = กลับไปตำแหน่ง/ซูมเดิม, ไม่มี = fit view ตามเดิม
+      // ยิงซ้ำที่ 300ms เผื่อรอบแรก React Flow ยังวัด node ไม่เสร็จ (โหลดครั้งแรก fitView จะเงียบ)
+      const restore = () => {
+        const vp = loadVp(id);
+        if (vp) setViewport(vp);
+        else void fitView({ padding: 0.2 });
+      };
+      setTimeout(restore, 50);
+      setTimeout(restore, 300);
+    }
   };
 
   // โหลด index + diagram แรกตอน mount — ย้ายไปอยู่หลัง bootstrap (react-hooks/immutability ห้ามเรียกก่อนประกาศ)
@@ -1699,10 +1809,11 @@ function Designer({
           // ประวัติ undo เป็นของ state ชุดเก่า — openDiagram ล้างทิ้ง ต้องบอกผู้ใช้ตรงๆ (ไม่ให้กด Ctrl+Z แล้วงง)
           const histLost = past.current.length > 0 || future.current.length > 0;
           if (id) openDiagram(id, true);
+          // ข้อความกลางๆ — แยกไม่ได้ว่าใครแก้ (แท็บอื่นของผู้ใช้เอง หรือ AI ผ่าน MCP) ห้ามชี้เฉพาะว่าเป็น AI
           setAiNotice(
             histLost
-              ? "🔄 อัปเดตจาก AI (MCP) หรือแหล่งอื่นแล้ว — ประวัติย้อนกลับ (Ctrl+Z) ของแท็บนี้ถูกล้างเพราะโหลดข้อมูลชุดใหม่"
-              : "🔄 อัปเดตจาก AI (MCP) หรือแหล่งอื่นแล้ว"
+              ? "🔄 มีการแก้ไขจากที่อื่น (แท็บ/อุปกรณ์อื่น หรือ AI ผ่าน MCP) — อัปเดตให้แล้ว · ประวัติย้อนกลับ (Ctrl+Z) ของแท็บนี้ถูกล้างเพราะโหลดข้อมูลชุดใหม่"
+              : "🔄 มีการแก้ไขจากที่อื่น (แท็บ/อุปกรณ์อื่น หรือ AI ผ่าน MCP) — อัปเดตให้แล้ว"
           );
           setTimeout(() => setAiNotice(""), histLost ? 6000 : 3000);
         } catch {
@@ -1808,6 +1919,15 @@ function Designer({
     syncHistSizes();
   }, [commitHistory, setNodes, setEdges]);
 
+  // มีการแก้ที่ยังไม่ commit เข้า history (debounce 400ms) — ปุ่ม ↶ ต้อง enable ทันทีหลังแก้
+  // ไม่รอ debounce (undo() เรียก commitHistory เองก่อน pop จึงกดได้เลย)
+  const dirty = useMemo(() => {
+    // อ่าน ref อย่างเดียว: present เปลี่ยนเฉพาะตอน commit/undo ซึ่งมาพร้อม setNodes/setEdges
+    // (memo คำนวณใหม่รอบเดียวกัน) จึงไม่มี stale render; เก็บเป็น state จะกลายเป็น setState ใน effect
+    // eslint-disable-next-line react-hooks/refs
+    return Boolean(cur) && serializeSnapshot(nodes, edges) !== present.current;
+  }, [nodes, edges, cur]);
+
   // กันปิดแท็บก่อน autosave 400ms ทำงาน
   useEffect(() => {
     window.addEventListener("beforeunload", saveNow);
@@ -1843,6 +1963,7 @@ function Designer({
     const tab = tabs.find((t) => t.id === id);
     if (!confirm(`ลบ "${tab?.name}" ทิ้งถาวร?`)) return;
     localStorage.removeItem(dataKey(id));
+    localStorage.removeItem(vpKey(id)); // viewport ที่จำไว้ของแท็บนี้ไม่มีประโยชน์แล้ว
     delete diagramsMap.current[id];
     const rest = tabs.filter((t) => t.id !== id);
     if (!rest.length) {
@@ -2041,24 +2162,39 @@ function Designer({
     [nodes, edges, allDiagrams, cur],
   );
 
-  // คีย์ลัด: Ctrl+D ทำซ้ำ node ที่เลือก, Ctrl+K โฟกัสค้นหา, Esc ปิดค้นหา/modal
+  // คีย์ลัด: Ctrl+D ทำซ้ำ, Ctrl+K ค้นหา, Ctrl+A เลือกทั้งหมด, Ctrl+C/V คัดลอก/วาง,
+  // Ctrl+S กัน Save-Page dialog, Ctrl+Z/Y ย้อน/ทำซ้ำ, Esc ปิดค้นหา/modal/เมนูคลิกขวา
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") {
         setQuery("");
         searchInput.current?.blur();
         setCodeOpen(false);
+        setCtxMenu(null);
         return;
       }
       const el = document.activeElement;
-      if (
+      const typing =
         el instanceof HTMLInputElement ||
         el instanceof HTMLTextAreaElement ||
-        el instanceof HTMLSelectElement
-      )
-        return;
+        el instanceof HTMLSelectElement;
       if (!(ev.ctrlKey || ev.metaKey)) return;
       const k = ev.key.toLowerCase();
+      // Ctrl+S — คนกดติดมือเพื่อความมั่นใจ อย่าปล่อยให้เบราว์เซอร์เปิด Save-Page dialog
+      if (k === "s") {
+        ev.preventDefault();
+        saveNow();
+        setAiNotice("💾 บันทึกอัตโนมัติอยู่แล้ว — ทุกการแก้ไขถูกเก็บทันที (ไม่ต้องกด Ctrl+S)");
+        setTimeout(() => setAiNotice(""), 2500);
+        return;
+      }
+      if (typing) {
+        // Ctrl+Z/Y ในช่องพิมพ์ "บนการ์ด" = undo ของผังตามความเคยชิน Excel/Figma (blur ก่อนกันค่าค้าง)
+        // ช่องอื่น (ค้นหา/ชื่อแท็บ/popup) คงเป็น native undo ของข้อความ
+        if ((k === "z" || k === "y") && el instanceof HTMLElement && el.closest(".react-flow__node")) {
+          el.blur();
+        } else return;
+      }
       if (k === "d") {
         const sel = nodes.find((n) => n.selected);
         if (!sel) return;
@@ -2067,8 +2203,19 @@ function Designer({
       } else if (k === "k") {
         ev.preventDefault();
         searchInput.current?.focus();
+      } else if (k === "a") {
+        // เลือกทุกคอลเลกชันในผัง (ไม่ใช่ select ข้อความทั้งหน้า)
+        ev.preventDefault();
+        setNodes((ns) => ns.map((n) => ({ ...n, selected: true })));
+      } else if (k === "c") {
+        const sel = nodes.find((n) => n.selected);
+        if (sel) copyRef.current = sel; // เก็บ snapshot — ลบต้นฉบับแล้วยังวางได้
+      } else if (k === "v") {
+        if (!copyRef.current) return;
+        ev.preventDefault();
+        const src = copyRef.current;
+        setNodes((ns) => [...ns.map((n) => ({ ...n, selected: false })), cloneCollection(src)]);
       } else if (k === "z") {
-        // โฟกัส input/textarea/select ถูก return ไปก่อนแล้ว → Ctrl+Z ในช่องพิมพ์ = native undo
         ev.preventDefault();
         if (ev.shiftKey) redo();
         else undo();
@@ -2079,7 +2226,7 @@ function Designer({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [nodes, setNodes, undo, redo]);
+  }, [nodes, setNodes, undo, redo, saveNow]);
 
   // ค้นหาจากชื่อคอลเลกชัน + ชื่อฟิลด์
   const searchResults = useMemo(() => {
@@ -2092,11 +2239,57 @@ function Designer({
     );
   }, [nodes, query]);
 
+  // ผลค้นหาจากแท็บอื่นด้วย (พร้อม badge ชื่อแท็บ) — ไม่งั้นผู้ใช้คิดว่า collection หาย ทั้งที่อยู่คนละแท็บ
+  const crossSearchResults = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const out: { node: CollectionNode; tabId: string; tabName: string }[] = [];
+    for (const t of tabs) {
+      if (t.id === cur) continue;
+      for (const n of allDiagrams[t.id]?.nodes ?? []) {
+        if (
+          n.data.label.toLowerCase().includes(q) ||
+          n.data.fields.some((f) => f.name.toLowerCase().includes(q))
+        )
+          out.push({ node: n, tabId: t.id, tabName: t.name });
+      }
+    }
+    return out;
+  }, [query, tabs, cur, allDiagrams]);
+
   const focusNode = (nid: string) => {
     setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === nid })));
     setQuery("");
     fitView({ nodes: [{ id: nid }], duration: 300, maxZoom: 1.2 });
   };
+
+  // กดผลค้นหาจากแท็บอื่น — สลับไปแท็บนั้นแล้วซูมหา node (รอ openDiagram โหลด state ก่อน)
+  const focusCrossNode = (tabId: string, nid: string) => {
+    setQuery("");
+    switchTab(tabId);
+    setTimeout(() => {
+      setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === nid })));
+      fitView({ nodes: [{ id: nid }], duration: 300, maxZoom: 1.2 });
+    }, 350);
+  };
+
+  // ตัวบอก toolbar ล้นจอ — จอแคบ (โน้ตบุ๊ก 1366/1280px) ปุ่มขวาสุดถูกซ่อนหลัง scroll เงียบๆ
+  // ไม่มีสัญญาณอะไรเลย ผู้ใช้ไม่รู้ว่ามีปุ่มนำเข้า/ส่งออก/สำรองอยู่ — โชว์ » ไล่สีเมื่อยังมีของซ่อนขวา
+  useEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return;
+    const check = () => setTbOverflow(el.scrollWidth - el.clientWidth - el.scrollLeft > 8);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    el.addEventListener("scroll", check, { passive: true });
+    window.addEventListener("resize", check);
+    return () => {
+      ro.disconnect();
+      el.removeEventListener("scroll", check);
+      window.removeEventListener("resize", check);
+    };
+  }, []);
 
   // ขนาดจริงของการ์ด — `n.measured` ใน controlled state ไม่ sync กลับจาก React Flow เสมอไป
   // (เจอ undefined ทั้งที่การ์ด render แล้ว) จึงอ่านจาก internal store ซึ่งเป็นแหล่งเดียวกับที่
@@ -2109,16 +2302,17 @@ function Designer({
     };
   };
 
-  const addCollection = () =>
+  const addCollection = (at?: { x: number; y: number }) =>
     setNodes((ns) => {
-      // วางใต้การ์ดที่อยู่ล่างสุดตามความสูงจริง — สูตร index*40 เดิมโดนการ์ดสูงๆ ทับจนมองไม่เห็น/กดไม่ได้
+      // ไม่ระบุตำแหน่ง (ปุ่ม toolbar) = วางใต้การ์ดล่างสุดตามความสูงจริง — สูตร index*40 เดิมโดนการ์ดสูงๆ ทับ
+      // ระบุตำแหน่ง (เมนูคลิกขวาบนพื้นที่ว่าง) = วางตรงที่คลิก
       const bottom = ns.reduce((m, n) => Math.max(m, n.position.y + sizeOf(n).h), 80);
       return [
         ...ns,
         {
           id: uid(),
           type: "collection",
-          position: { x: 120, y: bottom + 40 },
+          position: at ?? { x: 120, y: bottom + 40 },
           data: {
             label: `collection_${ns.length + 1}`,
             fields: [{ id: uid(), name: "_id", type: "ObjectId" as FieldType, required: true }],
@@ -2126,6 +2320,65 @@ function Designer({
         },
       ];
     });
+
+  // เพิ่มฟิลด์จากเมนูคลิกขวา (นอกตัวการ์ด) — โฟกัสช่องชื่อทันทีเหมือนปุ่ม ＋ เพิ่มฟิลด์ในการ์ด
+  const addFieldTo = (nid: string) => {
+    const fid = uid();
+    setNodes((ns) =>
+      ns.map((n) =>
+        n.id === nid
+          ? {
+              ...n,
+              data: {
+                ...n.data,
+                fields: [
+                  ...n.data.fields,
+                  { id: fid, name: `field_${n.data.fields.length + 1}`, type: "String" as FieldType, required: false },
+                ],
+              },
+            }
+          : n
+      )
+    );
+    setTimeout(() => {
+      const el = document.querySelector<HTMLInputElement>(`input[data-fid="${fid}"]`);
+      el?.focus();
+      el?.select();
+    }, 0);
+  };
+
+  // ย้าย collection ไปแท็บอื่นจาก UI (semantics เดียวกับ MCP move_collection):
+  // node ออกจากแท็บนี้ + เส้นที่มันเป็น "ต้นทาง" ตามไปด้วย (invariant: เส้นข้าม tab เก็บใน diagram ต้นทาง)
+  // เส้นที่ชี้ "มาหา" node นี้ยังอยู่แท็บนี้ → กลายเป็นเส้นข้าม tab (crossref stub) อัตโนมัติ
+  const moveNodeToTab = (nid: string, tabId: string) => {
+    const node = nodes.find((n) => n.id === nid);
+    const tabName = tabs.find((t) => t.id === tabId)?.name ?? tabId;
+    if (!node || tabId === cur) return;
+    const dest = diagramsMap.current[tabId] ?? loadDiagram(tabId);
+    if (dest.nodes.some((n) => n.data.label === node.data.label)) {
+      window.alert(`แท็บ "${tabName}" มีคอลเลกชันชื่อ "${node.data.label}" อยู่แล้ว — ย้ายไม่ได้`);
+      return;
+    }
+    const movingEdges = edges.filter((e) => e.source === nid);
+    const newCur = { nodes: nodes.filter((n) => n.id !== nid), edges: edges.filter((e) => e.source !== nid) };
+    setNodes(newCur.nodes);
+    setEdges(newCur.edges);
+    const updated = {
+      nodes: [...dest.nodes, { ...node, selected: false }],
+      edges: [...dest.edges, ...movingEdges],
+    };
+    diagramsMap.current[tabId] = updated;
+    // ต้องอัปเดต entry ของแท็บปัจจุบันด้วย — ไม่งั้น allDiagrams[cur] ยังมี node ที่ย้ายไปค้างอยู่
+    // crossNodes จะคิดว่า node ยังอยู่แท็บนี้ (here.has = true) แล้วไม่สร้าง crossref stub เส้นหายเงียบ
+    diagramsMap.current[cur] = newCur;
+    trySave(dataKey(tabId), JSON.stringify(updated));
+    trySave(dataKey(cur), JSON.stringify(newCur));
+    setAllDiagrams({ ...diagramsMap.current }); // crossref stub คำนวณใหม่ทันที (autosave PUT ตามใน 400ms)
+    setAiNotice(
+      `➡ ย้าย "${node.data.label}" ไปแท็บ "${tabName}" แล้ว — เส้นเดิมกลายเป็นเส้นข้ามแท็บอัตโนมัติ`
+    );
+    setTimeout(() => setAiNotice(""), 4000);
+  };
 
   // จัดผังอัตโนมัติ (hybrid):
   // 1) กลุ่มที่มีเส้นเชื่อม → ELK layered (master ซ้าย → transaction ขวา, ลดเส้นตัด)
@@ -2306,7 +2559,8 @@ function Designer({
         <span className="hidden shrink-0 whitespace-nowrap text-xs text-slate-500 xl:block">
           ออกแบบโครงสร้างข้อมูล MongoDB
         </span>
-        <div className="mm-toolbar ml-auto flex min-w-0 items-center gap-2 overflow-x-auto">
+        <div className="relative ml-auto flex min-w-0 items-center">
+        <div ref={toolbarRef} className="mm-toolbar flex min-w-0 items-center gap-2 overflow-x-auto">
           {/* ค้นหา + ซูมไปหา */}
           <div className="relative">
             <input
@@ -2318,18 +2572,31 @@ function Designer({
             />
             {query.trim() !== "" && (
               <div className="mm-panel absolute left-0 top-full z-50 mt-1.5 max-h-64 w-64 overflow-auto">
-                {searchResults.length ? (
-                  searchResults.map((n) => (
-                    <button
-                      key={n.id}
-                      className="block w-full px-3 py-1.5 text-left text-sm text-slate-300 hover:bg-slate-800"
-                      onClick={() => focusNode(n.id)}
-                    >
-                      <span className="font-medium">{n.data.label}</span>
-                      <span className="ml-2 text-xs text-slate-500">{n.data.fields.length} ฟิลด์</span>
-                    </button>
-                  ))
-                ) : (
+                {searchResults.map((n) => (
+                  <button
+                    key={n.id}
+                    className="block w-full px-3 py-1.5 text-left text-sm text-slate-300 hover:bg-slate-800"
+                    onClick={() => focusNode(n.id)}
+                  >
+                    <span className="font-medium">{n.data.label}</span>
+                    <span className="ml-2 text-xs text-slate-500">{n.data.fields.length} ฟิลด์</span>
+                  </button>
+                ))}
+                {/* ผลจากแท็บอื่น — badge บอกชื่อแท็บ กดแล้วสลับแท็บ+ซูมหา */}
+                {crossSearchResults.map(({ node: n, tabId, tabName }) => (
+                  <button
+                    key={`${tabId}:${n.id}`}
+                    className="block w-full px-3 py-1.5 text-left text-sm text-slate-400 hover:bg-slate-800"
+                    title={`อยู่ในแท็บ "${tabName}" — กดเพื่อสลับไป`}
+                    onClick={() => focusCrossNode(tabId, n.id)}
+                  >
+                    <span className="font-medium">{n.data.label}</span>
+                    <span className="ml-2 rounded bg-amber-400/15 px-1.5 text-[10px] text-amber-300">
+                      แท็บ {tabName}
+                    </span>
+                  </button>
+                ))}
+                {searchResults.length === 0 && crossSearchResults.length === 0 && (
                   <div className="px-3 py-1.5 text-sm text-slate-500">ไม่พบ</div>
                 )}
               </div>
@@ -2338,7 +2605,7 @@ function Designer({
           <button
             className="mm-btn px-2.5"
             title="ย้อนกลับ (Ctrl+Z)"
-            disabled={!histSizes.past}
+            disabled={!histSizes.past && !dirty}
             onClick={undo}
           >
             ↶
@@ -2353,7 +2620,7 @@ function Designer({
           </button>
           <button
             className="mm-btn mm-btn-accent"
-            onClick={addCollection}
+            onClick={() => addCollection()}
           >
             ＋ เพิ่มคอลเลกชัน
           </button>
@@ -2400,12 +2667,39 @@ function Designer({
           </button>
           <button
             className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
-            title="สำรองทุก project เป็นไฟล์เดียว"
+            title="สำรองทุก project เป็นไฟล์เดียว (ไม่ใช่บันทึกไฟล์ปัจจุบัน — แอป autosave อยู่แล้ว)"
             onClick={backupAll}
           >
-            💾 <span className="hidden 2xl:inline">สำรองทั้งหมด</span>
+            {/* label ต้องเห็นเสมอ — ไอคอน 💾 เดี่ยวๆ สื่อ "save ไฟล์นี้" แต่จริงๆ สำรองทุกโปรเจกต์ */}
+            💾 สำรองทั้งหมด
+          </button>
+          <button
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+            title="ประวัติการแก้ไข — ดู/กู้คืน snapshot ก่อนหน้า (ย้อนทั้ง workspace)"
+            onClick={() => {
+              setHistOpen(true);
+              setRevisions(null);
+              void fetch("/api/revisions")
+                .then((r) => (r.ok ? r.json() : Promise.reject()))
+                .then((j) => setRevisions(j.revisions ?? []))
+                .catch(() => setRevisions([]));
+            }}
+          >
+            🕘 <span className="hidden 2xl:inline">ประวัติ</span>
           </button>
           <ThemeButton theme={theme} onToggle={onToggleTheme} />
+        </div>
+        {/* toolbar ล้น — ไล่สีปิดขอบขวา + » บอกว่ายังมีปุ่มซ่อนอยู่ (กดเพื่อเลื่อน) */}
+        {tbOverflow && (
+          <button
+            className="absolute right-0 top-0 z-10 flex h-full w-10 items-center justify-end pr-0.5 text-base text-slate-300 hover:text-sky-300"
+            style={{ background: "linear-gradient(90deg, transparent, var(--background) 65%)" }}
+            title="ยังมีปุ่มซ่อนอยู่ทางขวา — กดเพื่อเลื่อนดู"
+            onClick={() => toolbarRef.current?.scrollBy({ left: 220, behavior: "smooth" })}
+          >
+            »
+          </button>
+        )}
         </div>
         <input
           ref={fileInput}
@@ -2554,17 +2848,37 @@ function Designer({
             // stub ปลายทางเส้นข้าม tab — กดแล้วข้ามไป tab นั้น
             if ((n.type as string) === "crossref" && n.data.crossTabId) openDiagram(n.data.crossTabId);
           }}
+          // เมนูคลิกขวาของแอป (การ์ด/เส้น/พื้นที่ว่าง) — แทนเมนูเบราว์เซอร์เปล่าๆ
+          onNodeContextMenu={(e, n) => {
+            e.preventDefault();
+            if ((n.type as string) === "crossref") return; // stub ใช้คลิกซ้ายข้ามแท็บอยู่แล้ว
+            setCtxMenu({ x: e.clientX, y: e.clientY, kind: "node", id: n.id });
+          }}
+          onEdgeContextMenu={(e, ed) => {
+            e.preventDefault();
+            setCtxMenu({ x: e.clientX, y: e.clientY, kind: "edge", id: ed.id });
+          }}
+          onPaneContextMenu={(e) => {
+            e.preventDefault();
+            const me = e as ReactMouseEvent;
+            setCtxMenu({ x: me.clientX, y: me.clientY, kind: "pane" });
+          }}
+          // จำ zoom/pan ล่าสุดของแท็บนี้ — เปิดกลับมาอยู่ที่เดิม (session-6)
+          onMoveEnd={(_, vp) => {
+            if (cur)
+              try {
+                localStorage.setItem(vpKey(cur), JSON.stringify(vp));
+              } catch {}
+          }}
           onBeforeDelete={async ({ nodes: del }) => {
-            // คอลเลกชันที่ "มีงานจริง" ต้อง confirm ก่อนลบ — ครอบทั้งปุ่ม ✕ และ Delete key
-            // ไม่ดูแค่จำนวนฟิลด์: การ์ดที่มีแค่ _id แต่ใส่คำอธิบาย/ธง key/enum ไว้แล้ว = งานที่ตั้งใจทำ ห้ามหายเงียบ
-            const hasWork = (n: CollectionNode) =>
-              n.data.fields.length > 1 ||
-              !!n.data.description?.trim() ||
-              n.data.fields.some(
-                (f) => f.key || f.sessionkey || f.keygroup || f.unique || f.enum?.length || f.description?.trim()
-              );
-            const big = del.find(hasWork);
-            return !big || window.confirm(`ลบคอลเลกชัน "${big.data.label}"?`);
+            // ลบทั้ง collection ต้อง confirm เสมอ (✕ = ลบถาวร ไม่ใช่ปิด — กระทบฟิลด์ทั้งหมด + เส้นที่เชื่อม)
+            // ครอบทุกทาง: ปุ่ม ✕ บนการ์ด, Delete key, เมนูคลิกขวา · ลบเฉพาะเส้น (del ว่าง) ไม่ต้องถาม
+            if (del.length === 0) return true;
+            return window.confirm(
+              del.length === 1
+                ? `ลบคอลเลกชัน "${del[0].data.label}"? (เส้นที่เชื่อมถูกลบด้วย — ย้อนได้ด้วย Ctrl+Z)`
+                : `ลบคอลเลกชัน ${del.length} ตัวที่เลือก? (เส้นที่เชื่อมถูกลบด้วย — ย้อนได้ด้วย Ctrl+Z)`
+            );
           }}
           onNodeMouseEnter={(_, n) => setHoveredId(n.id)}
           onNodeMouseLeave={() => setHoveredId(null)}
@@ -2587,7 +2901,8 @@ function Designer({
             // ทิศลูกศร: แม่(master/key=target) → ลูก(FK=source) — markerStart อยู่ปลายฝั่งลูก + orient auto-start-reverse ให้หัวลูกศรชี้เข้าหาลูก (default auto จะชี้ออก = กลับทิศ)
             markerStart: { type: MarkerType.ArrowClosed, color: "#38bdf8", width: 20, height: 20, orient: "auto-start-reverse" },
           }}
-          fitView
+          // ไม่ใส่ prop fitView — openDiagram จัดมุมมองเองทุกครั้ง (viewport ที่จำไว้ หรือ fit view)
+          // ถ้าใส่ไว้ initial fit จะยิงทีหลังแล้วทับ viewport ที่เพิ่ง restore
         >
           <Background variant={BackgroundVariant.Dots} gap={20} color="#1e293b" />
           <Controls />
@@ -2682,17 +2997,22 @@ function Designer({
               </div>
               <ul className="space-y-1">
                 <li>• ลากจุดขวาของฟิลด์ → เชื่อมความสัมพันธ์</li>
+                <li>• คลิกขวา (การ์ด/เส้น/พื้นว่าง) = เมนูลัด</li>
                 <li>• ลากพื้นว่าง = กรอบเลือกหลายอัน</li>
                 <li>• เมาส์กลาง/ขวาลาก = เลื่อนจอ</li>
                 <li>
                   • <kbd className="rounded bg-slate-800 px-1">Ctrl</kbd>+ลาก /{" "}
                   <kbd className="rounded bg-slate-800 px-1">Ctrl</kbd>+wheel = เลื่อนจออิสระ
                 </li>
-                <li>• wheel = ซูม</li>
+                <li>• wheel = ซูม · Shift+wheel = เลื่อนแนวนอน</li>
                 <li>• ดับเบิลคลิกเส้น = เปลี่ยนชนิด/ความสัมพันธ์</li>
                 <li>
                   • <kbd className="rounded bg-slate-800 px-1">Ctrl+D</kbd> ทำซ้ำ ·{" "}
-                  <kbd className="rounded bg-slate-800 px-1">Ctrl+K</kbd> ค้นหา ·{" "}
+                  <kbd className="rounded bg-slate-800 px-1">Ctrl+C/V</kbd> คัดลอก/วาง ·{" "}
+                  <kbd className="rounded bg-slate-800 px-1">Ctrl+A</kbd> เลือกทั้งหมด
+                </li>
+                <li>
+                  • <kbd className="rounded bg-slate-800 px-1">Ctrl+K</kbd> ค้นหา ·{" "}
                   <kbd className="rounded bg-slate-800 px-1">Ctrl+Z</kbd> ย้อน ·{" "}
                   <kbd className="rounded bg-slate-800 px-1">Delete</kbd> ลบ
                 </li>
@@ -2808,7 +3128,228 @@ function Designer({
                 </button>
               </div>
             </div>
+            {/* เตือนตรงจุดที่กำลังจะเอาโค้ดไปใช้ — ไม่ปล่อยให้ได้สคริปต์พังเงียบๆ แล้วไปเจอตอนรัน */}
+            {lintIssues.some((i) => i.level === "error") && (
+              <div className="flex items-center gap-2 border-b border-amber-800 bg-amber-950 px-4 py-1.5 text-xs text-amber-300">
+                <span className="flex-1">
+                  ⚠ 🩺 ตรวจพบ {lintIssues.filter((i) => i.level === "error").length} จุดที่ทำให้โค้ดนี้ใช้ไม่ได้จริง
+                  (เช่น ชื่อซ้ำ/อักขระต้องห้าม) — แก้ก่อนนำไปใช้
+                </span>
+                <button
+                  className="shrink-0 rounded border border-amber-700 px-2 py-0.5 hover:text-amber-100"
+                  onClick={() => {
+                    setCodeOpen(false);
+                    setLintOpen(true);
+                  }}
+                >
+                  เปิดดูรายการ
+                </button>
+              </div>
+            )}
             <pre className="flex-1 overflow-auto p-4 text-xs leading-relaxed text-slate-300">{codeText}</pre>
+          </div>
+        </div>
+      )}
+
+      {/* เมนูคลิกขวา — ปิดเมื่อคลิกที่อื่น/Esc; ตำแหน่ง clamp ไม่ให้หลุดจอ */}
+      {ctxMenu && (
+        <div
+          className="fixed inset-0 z-[70]"
+          onClick={() => setCtxMenu(null)}
+          // preventDefault อย่างเดียว ห้ามปิดเมนู — เมนูจากพื้นที่ว่างถูกยิงตอน mouseup (panOnDrag ปุ่มขวา)
+          // แล้ว event contextmenu จริงตามมาโดน overlay ที่เพิ่ง mount พอดี ถ้าปิดตรงนี้เมนูจะหายก่อนเห็น
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <div
+            className="mm-panel absolute w-56 overflow-hidden py-1 text-sm"
+            style={{
+              left: Math.min(ctxMenu.x, window.innerWidth - 240),
+              top: Math.min(ctxMenu.y, window.innerHeight - 260),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {ctxMenu.kind === "node" && (
+              <>
+                <button
+                  className="block w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800"
+                  onClick={() => {
+                    const n = nodes.find((x) => x.id === ctxMenu.id);
+                    if (n) setNodes((ns) => [...ns, cloneCollection(n)]);
+                    setCtxMenu(null);
+                  }}
+                >
+                  ⧉ ทำซ้ำคอลเลกชัน <span className="float-right text-xs text-slate-500">Ctrl+D</span>
+                </button>
+                <button
+                  className="block w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800"
+                  onClick={() => {
+                    addFieldTo(ctxMenu.id);
+                    setCtxMenu(null);
+                  }}
+                >
+                  ＋ เพิ่มฟิลด์
+                </button>
+                {tabs.length > 1 && (
+                  <div className="border-t border-white/5 pt-1">
+                    <div className="px-3 py-0.5 text-[10px] text-slate-500">
+                      ➡ ย้ายไปแท็บ… (เส้นเดิมกลายเป็นเส้นข้ามแท็บ)
+                    </div>
+                    {tabs
+                      .filter((t) => t.id !== cur)
+                      .map((t) => (
+                        <button
+                          key={t.id}
+                          className="block w-full truncate px-5 py-1 text-left text-xs text-slate-300 hover:bg-slate-800"
+                          onClick={() => {
+                            moveNodeToTab(ctxMenu.id, t.id);
+                            setCtxMenu(null);
+                          }}
+                        >
+                          ▦ {t.name}
+                        </button>
+                      ))}
+                  </div>
+                )}
+                <button
+                  className="block w-full border-t border-white/5 px-3 py-1.5 text-left text-red-400 hover:bg-slate-800"
+                  onClick={() => {
+                    void deleteElements({ nodes: [{ id: ctxMenu.id }] });
+                    setCtxMenu(null);
+                  }}
+                >
+                  🗑 ลบคอลเลกชัน <span className="float-right text-xs text-slate-500">Delete</span>
+                </button>
+              </>
+            )}
+            {ctxMenu.kind === "edge" && (
+              <>
+                <button
+                  className="block w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800"
+                  onClick={() => {
+                    const ed = edges.find((x) => x.id === ctxMenu.id);
+                    if (ed) onEdgeDoubleClick(null as unknown as ReactMouseEvent, ed);
+                    setCtxMenu(null);
+                  }}
+                >
+                  ↻ เปลี่ยนชนิดความสัมพันธ์
+                </button>
+                <button
+                  className="block w-full px-3 py-1.5 text-left text-red-400 hover:bg-slate-800"
+                  onClick={() => {
+                    void deleteElements({ edges: [{ id: ctxMenu.id }] });
+                    setCtxMenu(null);
+                  }}
+                >
+                  🗑 ลบเส้นนี้
+                </button>
+              </>
+            )}
+            {ctxMenu.kind === "pane" && (
+              <>
+                <button
+                  className="block w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800"
+                  onClick={() => {
+                    addCollection(screenToFlowPosition({ x: ctxMenu.x, y: ctxMenu.y }));
+                    setCtxMenu(null);
+                  }}
+                >
+                  ＋ เพิ่มคอลเลกชันตรงนี้
+                </button>
+                <button
+                  className="block w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800"
+                  onClick={() => {
+                    void autoLayout();
+                    setCtxMenu(null);
+                  }}
+                >
+                  ▦ จัดผังอัตโนมัติ
+                </button>
+                <button
+                  className="block w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800"
+                  onClick={() => {
+                    void fitView({ padding: 0.2, duration: 300 });
+                    setCtxMenu(null);
+                  }}
+                >
+                  ⛶ มองเห็นทั้งผัง (Fit View)
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ประวัติการแก้ไข — เปิด snapshot ฝั่ง server (เดิมมีแต่ทาง MCP) ให้ผู้ใช้กู้เองได้จาก UI */}
+      {histOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+          onClick={() => setHistOpen(false)}
+        >
+          <div
+            className="mm-panel flex max-h-[70vh] w-full max-w-lg flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 border-b border-white/10 px-4 py-2.5">
+              <span className="text-sm font-semibold text-slate-200">🕘 ประวัติการแก้ไข</span>
+              <span className="text-xs text-slate-500">snapshot อัตโนมัติทุกครั้งที่บันทึก (เก็บล่าสุด 20 ชุด)</span>
+              <button className="mm-btn ml-auto px-2" onClick={() => setHistOpen(false)}>
+                ✕
+              </button>
+            </div>
+            <div className="border-b border-amber-900/50 bg-amber-950/50 px-4 py-1.5 text-[11px] text-amber-300">
+              ⚠ การกู้คืนย้อน<b>ทั้ง workspace (ทุกโปรเจกต์)</b>กลับไปเวลานั้น — สถานะปัจจุบันถูกเก็บเป็น snapshot
+              ใหม่ก่อนเสมอ กู้กลับมาได้
+            </div>
+            <div className="flex-1 overflow-auto p-2">
+              {revisions === null ? (
+                <div className="p-6 text-center text-sm text-slate-500">กำลังโหลด…</div>
+              ) : revisions.length === 0 ? (
+                <div className="p-6 text-center text-sm text-slate-500">
+                  ยังไม่มี snapshot — จะเริ่มเก็บเมื่อมีการบันทึกครั้งถัดไป
+                </div>
+              ) : (
+                revisions.map((r) => (
+                  <div
+                    key={r.rev}
+                    className="flex items-center gap-3 rounded px-3 py-2 text-sm hover:bg-slate-800/60"
+                  >
+                    <span className="w-16 shrink-0 text-xs text-slate-500">rev {r.rev}</span>
+                    <span className="flex-1 text-slate-300">
+                      {new Date(r.savedAt).toLocaleString("th-TH")}
+                    </span>
+                    <button
+                      className="shrink-0 rounded border border-slate-700 px-2 py-0.5 text-xs text-slate-300 hover:border-sky-600 hover:text-sky-300"
+                      onClick={() => {
+                        if (
+                          !window.confirm(
+                            `กู้คืนทั้ง workspace กลับไปที่ rev ${r.rev} (${new Date(r.savedAt).toLocaleString("th-TH")})?\nทุกโปรเจกต์จะย้อนกลับไปเวลานั้น — สถานะปัจจุบันถูกเก็บเป็น snapshot ก่อน`
+                          )
+                        )
+                          return;
+                        void (async () => {
+                          try {
+                            const res = await fetch("/api/revisions", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ rev: r.rev }),
+                            });
+                            if (!res.ok) throw new Error();
+                            setHistOpen(false);
+                            await bootstrap(); // โหลดข้อมูลชุดที่กู้กลับมาเข้าจอทันที
+                            setAiNotice(`🕘 กู้คืน workspace กลับไปที่ rev ${r.rev} แล้ว`);
+                            setTimeout(() => setAiNotice(""), 4000);
+                          } catch {
+                            window.alert("กู้คืนไม่สำเร็จ — snapshot อาจถูกลบไปแล้ว ลองเปิดประวัติใหม่");
+                          }
+                        })();
+                      }}
+                    >
+                      ↩ กู้คืน
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -2982,13 +3523,18 @@ function ProjectHome({
   return (
     <div className="flex h-screen flex-col items-center overflow-auto bg-slate-950 px-4 py-10">
       <div className="w-full max-w-2xl">
-        <div className="mb-6 flex items-center gap-3">
+        <div className="mb-2 flex items-center gap-3">
           <span className="h-3 w-3 rounded-full bg-emerald-500" />
           <h1 className="text-2xl font-semibold tracking-tight text-slate-50">MongoModel</h1>
           <span className="text-xs text-slate-500">ออกแบบโครงสร้างข้อมูล MongoDB</span>
           <div className="ml-auto">
             <ThemeButton theme={theme} onToggle={onToggleTheme} />
           </div>
+        </div>
+        {/* บอก scope ของแอปให้ผู้ใช้ใหม่รู้ก่อนกดสร้าง — ไม่ต้องเดาว่าแอปทำอะไรได้ */}
+        <div className="mb-6 text-xs leading-relaxed text-slate-500">
+          ลากวางออกแบบ collection → เชื่อม relation แบบ field→field → 🩺 ตรวจโมเดล → ⚙️ สร้างโค้ด
+          mongosh/Go/Mongoose/TypeScript + 📖 Wiki — ให้ AI ช่วยแก้ผังได้ผ่าน MCP
         </div>
 
         {offline ? (
@@ -3227,9 +3773,27 @@ function App() {
     const t = setTimeout(() => setProject(q), 0);
     return () => clearTimeout(t);
   }, []);
+  // เปิด/ปิดโปรเจกต์ = push ประวัติเบราว์เซอร์ — ปุ่ม Back พากลับหน้าเลือกโปรเจกต์ได้จริง
+  // (replaceState เดิมทำให้กด Back แล้วเงียบ) · ข้าม mount แรก (กัน push "/" ทับ deep link ก่อนโหลด)
+  // · URL ตรงอยู่แล้ว (มาจาก popstate/deep-link) = ไม่ push ซ้ำ
+  const historyBooted = useRef(false);
   useEffect(() => {
-    window.history.replaceState(null, "", project ? `/?project=${encodeURIComponent(project)}` : "/");
+    if (!historyBooted.current) {
+      historyBooted.current = true;
+      return;
+    }
+    const url = project ? `/?project=${encodeURIComponent(project)}` : "/";
+    if (window.location.pathname + window.location.search !== url)
+      window.history.pushState(null, "", url);
   }, [project]);
+  // ปุ่ม Back/Forward ของเบราว์เซอร์ → sync state ตาม URL (ไม่ push ซ้ำเพราะ URL ตรงแล้ว)
+  useEffect(() => {
+    const onPop = () => {
+      setProject(new URLSearchParams(window.location.search).get("project"));
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
   // เปิด designer ของโปรเจกต์เดียวกับ wiki → แสดงข้างกัน (split) ไม่ใช่ทับเต็มจอ
   const split = wiki !== null && wiki === project && !offline;
   // toggle — ปุ่ม 📖 Wiki บน toolbar กดซ้ำ = ปิด

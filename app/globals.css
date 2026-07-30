@@ -319,6 +319,19 @@ body {
   animation: wiki-fade-in 0.25s ease-out;
 }
 
+/* เส้นปรับความกว้างการ์ด (NodeResizeControl line ขวา) — ค่า default กว้าง 1px มองไม่เห็น/จับยาก
+   ขยาย hitbox เป็น 10px + โชว์แถบสีฟ้าตอน hover การ์ด ให้รู้ว่าลากปรับความกว้างได้ */
+.react-flow .mm-resize.line.right {
+  width: 10px;
+  border-right-width: 4px;
+  border-color: transparent;
+  border-radius: 0 0.875rem 0.875rem 0;
+  transition: border-color 0.15s;
+}
+.mm-card:hover .mm-resize.line.right {
+  border-color: rgba(56, 189, 248, 0.55);
+}
+
 /* virtual node ของเป้าหมายเส้นข้าม tab — เส้นประ + จาง แยกจาก node จริง */
 .cross-tab-node > div {
   border-style: dashed !important;
@@ -352,8 +365,23 @@ body {
   background: #f1f5f9;
   color: #0f172a;
 }
-[data-theme="light"] .mm-btn-primary,
+/* ปุ่ม primary/accent ต้องตั้ง background ทับด้วย — กฎ [data-theme="light"] .mm-btn ข้างบน
+   specificity เท่ากันแต่ตั้ง background:#fff จึงชนะกฎ .mm-btn-primary ฝั่ง dark
+   → เคยได้ตัวหนังสือขาวบนพื้นขาว อ่านไม่ออกทั้งปุ่ม (สร้างโปรเจกต์/เพิ่มคอลเลกชัน/สร้างโค้ด) */
+[data-theme="light"] .mm-btn-primary {
+  background: linear-gradient(180deg, #0ea5e9, #0284c7);
+  color: #fff;
+}
+[data-theme="light"] .mm-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #38bdf8, #0ea5e9);
+  color: #fff;
+}
 [data-theme="light"] .mm-btn-accent {
+  background: linear-gradient(180deg, #10b981, #059669);
+  color: #fff;
+}
+[data-theme="light"] .mm-btn-accent:hover:not(:disabled) {
+  background: linear-gradient(180deg, #34d399, #10b981);
   color: #fff;
 }
 [data-theme="light"] .mm-btn-on {
