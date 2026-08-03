@@ -2,9 +2,10 @@
 // collection = กล่อง sky, type (embedded) = กล่อง violet, reference = เส้น sky มีลูกเล่น, embed = ประ
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
   ReactFlow,
+  type ReactFlowInstance,
   Background,
   BackgroundVariant,
   Controls,
@@ -149,8 +150,39 @@ export default function WikiGraph({
     [nodes, activeId]
   );
 
+  // ธีมปัจจุบันอ่านจาก <html data-theme> (ตั้งโดยสคริปต์ใน layout.tsx ก่อน hydrate)
+  // — กราฟนี้อยู่ได้ทั้งในแผงข้าง canvas และ route /wiki/<project> จึงพึ่ง prop จาก designer ไม่ได้
+  const light = useSyncExternalStore(
+    (cb) => {
+      const o = new MutationObserver(cb);
+      o.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+      return () => o.disconnect();
+    },
+    () => document.documentElement.dataset.theme === "light",
+    () => false,
+  );
+
+  // แผงกราฟเปลี่ยนความกว้างได้ตลอด (ย่อ/ขยายแผงข้าง canvas, สลับ 300↔380px, ลากแบ่งจอ)
+  // React Flow fit ให้ครั้งเดียวตอน mount → node หลุดออกนอกกรอบทุกครั้งที่แผงแคบลง
+  const wrap = useRef<HTMLDivElement>(null);
+  const flow = useRef<ReactFlowInstance<WikiFlowNode, Edge> | null>(null);
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => flow.current?.fitView({ padding: 0.2 }));
+    });
+    ro.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, []);
+
   return (
-    <div className="h-full w-full">
+    <div ref={wrap} className="h-full w-full">
       <ReactFlow
         nodes={displayNodes}
         edges={edges}
@@ -164,6 +196,7 @@ export default function WikiGraph({
         zoomOnScroll
         proOptions={{ hideAttribution: false }}
         onInit={(instance) => {
+          flow.current = instance;
           // ตอน mount container อาจยังไม่มีขนาด — fit อีกครั้งหลัง layout นิ่ง
           setTimeout(() => instance.fitView({ padding: 0.2 }), 80);
         }}
@@ -172,11 +205,24 @@ export default function WikiGraph({
           if (gn) onOpenNote(gn.note);
         }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={20} color="#1e293b" />
+        {/* สีของ grid/minimap ต้องพลิกตามธีมด้วย ไม่งั้นโหมดสว่างได้กล่องดำทับกราฟ (เหมือนฝั่ง designer) */}
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={20}
+          color={light ? "#cbd5e1" : "#1e293b"}
+        />
         <Controls showInteractive={false} />
         <MiniMap
-          nodeColor={(n) => ((n as WikiFlowNode).data.kind === "collection" ? "#0c4a6e" : "#4c1d95")}
-          maskColor="rgba(2,6,23,0.75)"
+          nodeColor={(n) =>
+            (n as WikiFlowNode).data.kind === "collection"
+              ? light
+                ? "#7dd3fc"
+                : "#0c4a6e"
+              : light
+                ? "#c4b5fd"
+                : "#4c1d95"
+          }
+          maskColor={light ? "rgba(15,23,42,0.12)" : "rgba(2,6,23,0.75)"}
           pannable
           zoomable
         />
