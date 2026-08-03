@@ -15,7 +15,11 @@
 </p>
 
 <p align="center">
-  <img src="docs/preview.png" alt="หน้าจอ MongoModel แสดงผัง MongoDB บน canvas" width="100%" />
+  <a href="docs/preview.png">
+    <img src="docs/preview.png" alt="MongoModel Designer แสดง business key, key ผสม และ relation ระหว่าง collection" width="100%" />
+  </a>
+  <br />
+  <sub>Designer รุ่นปัจจุบัน — business key และ key ผสมอยู่บนแถบด้านบนของ collection พร้อมเส้น relation แบบ field → field</sub>
 </p>
 
 > [!NOTE]
@@ -33,6 +37,37 @@
 | **ส่งออกงานต่อได้ทันที** | สร้าง mongosh, Go, Mongoose, TypeScript, Markdown, Wiki, sample JSON และไฟล์ diagram JSON |
 | **ทำงานร่วมกับ AI** | MCP 25 tools ผ่าน HTTP หรือ stdio สำหรับอ่าน แก้ ตรวจ และสร้างโค้ดจาก model เดียวกับหน้าเว็บ |
 | **ทำงานหลายหน้าต่างได้** | autosave, sync ระหว่างแท็บ/เบราว์เซอร์, optimistic concurrency และ snapshot ย้อนกลับ 20 รุ่นล่าสุด |
+
+## หน้าจอจริง
+
+กดภาพเพื่อเปิดขนาดเต็ม
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/project-home.png"><img src="docs/screenshots/project-home.png" alt="หน้าเลือกและจัดการโปรเจกต์ของ MongoModel" /></a>
+      <br /><strong>1. จัดการหลายโปรเจกต์</strong>
+      <br />สร้าง นำเข้า เปลี่ยนชื่อ ลบ หรือเปิด Wiki จากหน้าเดียว พร้อมจำนวน diagram, collection และ MCP endpoint ที่ใช้งานได้ทันที
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/composite-key-mapping.png"><img src="docs/screenshots/composite-key-mapping.png" alt="รายละเอียด mapping ของ relation แบบ key ผสม" /></a>
+      <br /><strong>2. Key ผสมแสดงเป็นเส้นเดียว</strong>
+      <br />รวมหลาย field เป็น compound key แล้วคลิกเส้นเพื่อดู mapping รายคู่ เช่น <code>branch.holdingcode → company.holdingcode</code>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/code-generation.png"><img src="docs/screenshots/code-generation.png" alt="ศูนย์สร้างโค้ดจาก MongoModel" /></a>
+      <br /><strong>3. สร้างโค้ดจาก diagram</strong>
+      <br />ดูและคัดลอกผลลัพธ์ 8 รูปแบบในหน้าต่างเดียว ตั้งแต่ mongosh, Go, Mongoose และ TypeScript ไปจนถึง Wiki และ JSON
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/wiki-graph.png"><img src="docs/screenshots/wiki-graph.png" alt="Wiki graph แสดงข้าง MongoModel canvas" /></a>
+      <br /><strong>4. Wiki และกราฟทั้ง workspace</strong>
+      <br />เปิดเอกสารข้าง canvas โดยไม่เสีย state เดิม และสำรวจ collection, type กับ relation ข้ามทุก diagram ผ่านกราฟแบบ interactive
+    </td>
+  </tr>
+</table>
 
 ## เริ่มใช้งานภายใน 2 นาที
 
