@@ -99,8 +99,8 @@ export default function WikiViewer({ data, onClose }: { data: WikiData; onClose?
     }`;
 
   return (
-    <div className="flex h-screen flex-col bg-slate-950 text-slate-200">
-      {/* top bar */}
+    <div className="@container flex h-screen flex-col bg-slate-950 text-slate-200">
+      {/* top bar — วัดจากความกว้างแผง ไม่ใช่จอ (เปิดข้าง canvas แล้วปุ่มแตกเป็นคำละบรรทัด) */}
       <header className="flex items-center gap-3 border-b border-slate-800 bg-slate-900 px-4 py-2">
         {onClose ? (
           <button
@@ -119,49 +119,53 @@ export default function WikiViewer({ data, onClose }: { data: WikiData; onClose?
             ←
           </Link>
         )}
-        <span className="bg-gradient-to-r from-sky-400 to-violet-400 bg-clip-text font-bold text-transparent">
+        <span className="shrink-0 whitespace-nowrap bg-gradient-to-r from-sky-400 to-violet-400 bg-clip-text font-bold text-transparent">
           📖 Wiki
         </span>
-        <span className="max-w-64 truncate rounded-full border border-sky-800 bg-sky-950 px-2.5 py-0.5 text-xs text-sky-300">
+        <span className="max-w-64 shrink-0 truncate rounded-full border border-sky-800 bg-sky-950 px-2.5 py-0.5 text-xs text-sky-300">
           {project}
         </span>
-        <span className="hidden text-xs text-slate-500 sm:block">
+        <span className="hidden text-xs text-slate-500 @3xl:block">
           {gNodes.filter((n) => n.kind === "collection").length} collections ·{" "}
           {gNodes.filter((n) => n.kind === "type").length} types · {gEdges.filter((e) => e.kind !== "contain").length} ความสัมพันธ์
         </span>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           <button
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            className="whitespace-nowrap rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
             onClick={() => setSwitcher(true)}
           >
-            🔍 ค้นหา <kbd className="ml-1 rounded bg-slate-800 px-1 text-[10px]">Ctrl+K</kbd>
+            🔍 <span className="hidden @2xl:inline">ค้นหา</span>
+            <kbd className="ml-1 hidden rounded bg-slate-800 px-1 text-[10px] @4xl:inline">Ctrl+K</kbd>
           </button>
           <button
-            className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+            className={`whitespace-nowrap rounded-lg border px-3 py-1.5 text-xs transition-colors ${
               panel === "graph"
                 ? "border-sky-600 bg-sky-950 text-sky-300"
                 : "border-slate-700 text-slate-400 hover:bg-slate-800"
             }`}
             onClick={() => setPanel((p) => (p === "graph" ? null : "graph"))}
           >
-            🕸 กราฟ
+            🕸 <span className="hidden @2xl:inline">กราฟ</span>
           </button>
           <button
-            className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+            className={`whitespace-nowrap rounded-lg border px-3 py-1.5 text-xs transition-colors ${
               panel === "links"
                 ? "border-violet-600 bg-violet-950 text-violet-300"
                 : "border-slate-700 text-slate-400 hover:bg-slate-800"
             }`}
             onClick={() => setPanel((p) => (p === "links" ? null : "links"))}
           >
-            🔗 ลิงก์
+            🔗 <span className="hidden @2xl:inline">ลิงก์</span>
           </button>
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
+      {/* @container — breakpoint ต้องวัดจาก "ความกว้างของแผงนี้" ไม่ใช่ของจอ: viewport breakpoint
+          ทำให้ตอนเปิด wiki เป็นแผงข้าง canvas (จอ 1920 แต่แผงกว้าง ~860) sidebar โผล่ทั้งสองข้าง
+          กิน 604px คงที่ เหลือคอลัมน์อ่าน 384px หัวเรื่องแตกเป็นคำละบรรทัด */}
+      <div className="@container flex min-h-0 flex-1">
         {/* explorer */}
-        <aside className="flex w-56 shrink-0 flex-col gap-3 overflow-y-auto border-r border-slate-800 bg-slate-900/50 p-3">
+        <aside className="hidden w-44 shrink-0 flex-col gap-3 overflow-y-auto border-r border-slate-800 bg-slate-900/50 p-3 @2xl:flex @6xl:w-56">
           {sections.map((s) => (
             <div key={s.key}>
               <button
@@ -187,13 +191,17 @@ export default function WikiViewer({ data, onClose }: { data: WikiData; onClose?
         </aside>
 
         {/* เนื้อหา note */}
-        <main className="min-w-0 flex-1 overflow-y-auto">
+        {/* แผงแคบ + เปิดกราฟ/ลิงก์ = ให้แผงนั้นแทนที่เนื้อหาไปเลย (กดปุ่มแล้วต้องเห็นอะไรสักอย่าง)
+            ของเดิมซ่อน aside ทิ้งเงียบ ๆ กดปุ่ม 🕸 แล้วจอไม่เปลี่ยน */}
+        <main
+          className={`min-w-0 flex-1 overflow-y-auto @4xl:block @4xl:min-w-[24rem] ${panel ? "hidden" : ""}`}
+        >
           <NoteView note={note} onOpen={open} onOpenGraph={() => setPanel("graph")} />
         </main>
 
         {/* panel ขวา: กราฟ / ลิงก์ */}
         {panel && (
-          <aside className="flex w-[380px] shrink-0 flex-col border-l border-slate-800 bg-slate-900/40">
+          <aside className="flex min-w-0 flex-1 flex-col border-l border-slate-800 bg-slate-900/40 @4xl:w-[300px] @4xl:flex-none @7xl:w-[380px]">
             {panel === "graph" ? (
               <WikiGraph gNodes={gNodes} gEdges={gEdges} activeNote={effectiveCur} onOpenNote={(p) => setCur(p)} />
             ) : (

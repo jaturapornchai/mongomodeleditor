@@ -25,6 +25,8 @@ import {
   type Field,
   type FieldType,
   type CollectionData,
+  type CollectionIndex,
+  type IndexDirection,
   type EdgeRelData,
   type GenNode,
   type GenEdge,
@@ -35,7 +37,9 @@ import {
   toSampleDoc,
   toWiki,
   toGo,
-  lintModel,
+  lintProject,
+  fieldPathEntries,
+  keyGroupsOf,
 } from "../schema";
 
 // ---------- ชนิดข้อมูล node/edge แบบโครงสร้างตรง UI ----------
@@ -198,8 +202,15 @@ function findField(
   fields: Field[],
   ref: string
 ): { container: Field[]; field: Field } | { error: string } {
-  const byId = fields.find((f) => f.id === ref);
-  if (byId) return { container: fields, field: byId };
+  const findById = (container: Field[]): { container: Field[]; field: Field } | undefined => {
+    for (const field of container) {
+      if (field.id === ref) return { container, field };
+      const nested = field.children && findById(field.children);
+      if (nested) return nested;
+    }
+  };
+  const byId = findById(fields);
+  if (byId) return byId;
   const parts = ref.split(".");
   let container = fields;
   for (let i = 0; i < parts.length; i++) {
@@ -210,6 +221,183 @@ function findField(
     container = f.children;
   }
   return { error: `[FIELD_NOT_FOUND] ไม่พบ field "${ref}"` };
+}
+
+type IndexInput = {
+  fields: { field: string; direction?: IndexDirection }[];
+  unique?: boolean;
+  sparse?: boolean;
+};
+
+/** รับ field id หรือ dotted path จาก MCP แล้วเก็บเป็น id; validate ทั้งก้อนก่อนเขียน */
+function toIndexes(
+  fields: Field[],
+  inputs: IndexInput[],
+  existing: CollectionIndex[] = [],
+  referenceFields: Iterable<string> = [],
+): CollectionIndex[] | { error: string } {
+  if (inputs.length > 63) return { error: LIMIT_INDEXES.error };
+  const indexes: CollectionIndex[] = [];
+  const seen = new Set<string>();
+  const entries = fieldPathEntries(fields);
+  const arrayOwner = new Map<string, string>();
+  const walkArrayOwners = (nested: Field[], inherited?: string): void => {
+    for (const field of nested) {
+      const owner = field.type === "Array" ? field.id : inherited;
+      if (owner) arrayOwner.set(field.id, owner);
+      if ((field.type === "Object" || (field.type === "Array" && field.of === "Object")) && field.children?.length) {
+        walkArrayOwners(field.children, owner);
+      }
+    }
+  };
+  walkArrayOwners(fields);
+  const byId = new Map<string, typeof entries>();
+  const byPath = new Map<string, typeof entries>();
+  for (const entry of entries) {
+    const ids = byId.get(entry.field.id) ?? [];
+    ids.push(entry);
+    byId.set(entry.field.id, ids);
+    const paths = byPath.get(entry.path) ?? [];
+    paths.push(entry);
+    byPath.set(entry.path, paths);
+  }
+  const oldId = new Map(
+    existing.map((index) => [
+      JSON.stringify(index.fields.map((part) => [part.field, part.direction])),
+      index.id,
+    ]),
+  );
+  for (const input of inputs) {
+    if (!input.fields.length) return { error: "[INDEX_EMPTY] index ต้องมีอย่างน้อย 1 field" };
+    if (input.fields.length > 32) return { error: LIMIT_INDEX_FIELDS.error };
+    const parts: CollectionIndex["fields"] = [];
+    const members = new Set<string>();
+    const paths = new Set<string>();
+    const arrayMembers = new Set<string>();
+    for (const part of input.fields) {
+      const matches = byId.get(part.field) ?? byPath.get(part.field) ?? [];
+      if (!matches.length) return { error: `[INDEX_FIELD_NOT_FOUND] ไม่พบ field "${part.field}"` };
+      if (matches.length > 1) return { error: `[INDEX_FIELD_AMBIGUOUS] field "${part.field}" ซ้ำหรืออ้างได้หลายตำแหน่ง — ใช้ field id ที่ไม่ซ้ำ` };
+      const hit = matches[0];
+      if (members.has(hit.field.id)) {
+        return { error: `[DUPLICATE_INDEX_FIELD] field "${part.field}" ซ้ำใน index เดียวกัน` };
+      }
+      if (paths.has(hit.path)) {
+        return { error: `[DUPLICATE_INDEX_PATH] dotted path "${hit.path}" ซ้ำใน index เดียวกัน` };
+      }
+      const direction = part.direction ?? 1;
+      if (direction !== 1 && direction !== -1) {
+        return { error: "[INDEX_DIRECTION_INVALID] direction ต้องเป็น 1 หรือ -1" };
+      }
+      members.add(hit.field.id);
+      paths.add(hit.path);
+      const owner = arrayOwner.get(hit.field.id);
+      if (owner) arrayMembers.add(owner);
+      parts.push({ field: hit.field.id, direction });
+    }
+    if (arrayMembers.size > 1) {
+      return { error: "[COMPOUND_INDEX_PARALLEL_ARRAYS] compound index แตะ array มากกว่า 1 สาย ซึ่ง MongoDB ไม่รองรับ" };
+    }
+    const signature = JSON.stringify(parts.map((part) => [part.field, part.direction]));
+    if (seen.has(signature)) return { error: "[DUPLICATE_INDEX] มี index รูปแบบเดียวกันซ้ำใน collection" };
+    seen.add(signature);
+    indexes.push({
+      id: oldId.get(signature) ?? uid(),
+      fields: parts,
+      ...(input.unique && { unique: true }),
+      ...(input.sparse && { sparse: true }),
+    });
+  }
+  const generated = new Set<string>();
+  const prefixes = new Set<string>();
+  for (const entry of entries) {
+    if (entry.field.unique) {
+      generated.add(JSON.stringify([[entry.path, 1]]));
+      prefixes.add(entry.path);
+    }
+  }
+  for (const group of keyGroupsOf(fields)) {
+    if (group.fields.length < 2) continue;
+    if (group.fields.length > 32) return { error: LIMIT_INDEX_FIELDS.error };
+    if (group.fields.filter((field) => field.type === "Array").length > 1) {
+      return { error: "[COMPOUND_INDEX_PARALLEL_ARRAYS] key ผสมแตะ array มากกว่า 1 สาย ซึ่ง MongoDB ไม่รองรับ" };
+    }
+    generated.add(JSON.stringify(group.fields.map((field) => [field.name, 1])));
+    prefixes.add(group.fields[0].name);
+  }
+  for (const index of indexes) {
+    const pattern = index.fields.map((part) => [byId.get(part.field)?.[0]?.path, part.direction]);
+    generated.add(JSON.stringify(pattern));
+    if (pattern[0]?.[0]) prefixes.add(String(pattern[0][0]));
+  }
+  for (const fieldId of referenceFields) {
+    const entry = byId.get(fieldId)?.[0];
+    if (!entry || entry.field.unique || prefixes.has(entry.path)) continue;
+    generated.add(JSON.stringify([[entry.path, 1]]));
+    prefixes.add(entry.path);
+  }
+  generated.delete(JSON.stringify([["_id", 1]]));
+  const totalIndexes = generated.size + 1;
+  if (totalIndexes > 64) {
+    return { error: `[TOO_MANY_INDEXES] index รวม ${totalIndexes} ชุด (รวม _id และ index อัตโนมัติ) — MongoDB จำกัดไม่เกิน 64 ชุดต่อ collection` };
+  }
+  return indexes;
+}
+
+function fieldIds(field: Field): Set<string> {
+  return new Set([field.id, ...(field.children ?? []).flatMap((child) => [...fieldIds(child)])]);
+}
+
+function referenceFieldIds(p: StoredProject, nodeId: string): Set<string> {
+  const ids = new Set<string>();
+  for (const diagram of Object.values(p.diagrams)) {
+    for (const edge of diagram.edges as E[]) {
+      if (edge.source !== nodeId || edge.data?.kind === "embed") continue;
+      const id = edge.sourceHandle?.replace(/-s(-[lr])?$/, "");
+      if (id) ids.add(id);
+    }
+  }
+  return ids;
+}
+
+/** กัน mutation อื่นเพิ่ม unique/keygroup/relation จนชนเพดาน MongoDB หลังสร้าง collection แล้ว */
+function nodeIndexError(p: StoredProject, node: N): string | null {
+  const inputs: IndexInput[] = (node.data.indexes ?? []).map((index) => ({
+    fields: index.fields,
+    ...(index.unique && { unique: true }),
+    ...(index.sparse && { sparse: true }),
+  }));
+  const result = toIndexes(
+    node.data.fields,
+    inputs,
+    node.data.indexes,
+    referenceFieldIds(p, node.id),
+  );
+  return "error" in result ? result.error : null;
+}
+
+/** ลบทั้ง index เมื่อสมาชิกใดหาย — ห้ามย่อ compound index แล้วเปลี่ยน semantics เงียบ */
+function dropIndexesTouching(node: N, ids: Set<string>): number {
+  const before = node.data.indexes?.length ?? 0;
+  node.data.indexes = (node.data.indexes ?? []).filter(
+    (index) => !index.fields.some((part) => ids.has(part.field)),
+  );
+  if (!node.data.indexes.length) delete node.data.indexes;
+  return before - (node.data.indexes?.length ?? 0);
+}
+
+function dropEdgesTouchingFields(p: StoredProject, nodeId: string, ids: Set<string>): number {
+  let removed = 0;
+  for (const diagram of Object.values(p.diagrams)) {
+    const before = (diagram.edges as E[]).length;
+    diagram.edges = (diagram.edges as E[]).filter(
+      (edge) =>
+        !(edge.source === nodeId && ids.has((edge.sourceHandle ?? "").replace(/-s(-[lr])?$/, ""))) &&
+        !(edge.target === nodeId && ids.has((edge.targetHandle ?? "").replace(/-t(-[lr])?$/, ""))),
+    );
+    removed += before - (diagram.edges as E[]).length;
+  }
+  return removed;
 }
 
 /**
@@ -229,7 +417,7 @@ function dropEdgesTouching(p: StoredProject, ids: Set<string>): number {
 
 /** pin field ระดับบนที่ติดธง key ขึ้นต่อท้ายกลุ่ม key ด้านบน (PK/_id → key เดิม → ตัวใหม่) — ไม่เรียงกลุ่มเดิมใหม่ */
 function pinKeyField(container: Field[], field: Field): void {
-  const isKey = (x: Field) => Boolean(x.key || x.sessionkey || x.keygroup || x.name === "_id");
+  const isKey = (x: Field) => Boolean(x.key || x.keygroup || x.name === "_id");
   container.splice(container.indexOf(field), 1);
   let last = -1;
   container.forEach((x, i) => {
@@ -249,7 +437,6 @@ type FieldInput = {
   unique?: boolean;
   bounded?: boolean;
   key?: boolean;
-  sessionkey?: boolean;
   keygroup?: string;
   keygroupunique?: boolean;
   children?: FieldInput[];
@@ -267,7 +454,6 @@ const toField = (input: FieldInput): Field => ({
   ...(input.unique !== undefined && { unique: input.unique }),
   ...(input.bounded !== undefined && { bounded: input.bounded }),
   ...(input.key !== undefined && { key: input.key }),
-  ...(input.sessionkey !== undefined && { sessionkey: input.sessionkey }),
   ...(input.keygroup !== undefined && input.keygroup !== "" && { keygroup: input.keygroup }),
   ...(input.keygroupunique !== undefined && { keygroupunique: input.keygroupunique }),
   ...(input.children !== undefined && { children: input.children.map(toField) }),
@@ -304,6 +490,8 @@ const LIMIT_NAME = { error: "[VALUE_TOO_LONG] ข้อความยาวเ�
 const LIMIT_FIELDS = { error: "[TOO_MANY_FIELDS] fields เกิน 300 รายการต่อคำสั่ง — แบ่งส่งเป็นหลายครั้งด้วย add_field" };
 const LIMIT_COLLECTIONS = { error: "[TOO_MANY_COLLECTIONS] collections เกิน 200 รายการต่อคำสั่ง — แบ่ง diagram หรือส่งเป็นหลายครั้ง" };
 const LIMIT_RELATIONS = { error: "[TOO_MANY_RELATIONS] relations เกิน 500 รายการต่อคำสั่ง — แบ่งส่งเป็นหลายครั้งด้วย add_relation" };
+const LIMIT_INDEXES = { error: "[TOO_MANY_INDEXES] indexes ที่กำหนดเพิ่มเกิน 63 รายการ — MongoDB จำกัดรวม _id และ index อัตโนมัติไม่เกิน 64 รายการต่อ collection" };
+const LIMIT_INDEX_FIELDS = { error: "[TOO_MANY_INDEX_FIELDS] compound index เกิน 32 ฟิลด์ — ลดจำนวนสมาชิกตามเพดาน MongoDB" };
 
 const fieldShape = {
   name: z.string().min(1).max(200, LIMIT_NAME).describe("ชื่อฟิลด์"),
@@ -314,9 +502,8 @@ const fieldShape = {
   enum: z.array(z.string()).optional().describe("ค่าที่อนุญาต"),
   default: z.string().optional().describe("ค่าเริ่มต้น (string เสมอ)"),
   unique: z.boolean().optional(),
-    bounded: z.boolean().optional().describe("array ของ object: ยืนยันว่ามีขอบเขตแล้ว (linter ไม่เตือนเพดาน 16MB)"),
+  bounded: z.boolean().optional().describe("array ของ object: ยืนยันว่ามีขอบเขตแล้ว (linter ไม่เตือนเพดาน 16MB)"),
   key: z.boolean().optional().describe("business key — field ที่ collection อื่นใช้อ้างอิง (แสดง 🔑)"),
-  sessionkey: z.boolean().optional().describe("session/tenant scope key เช่น holdingcode (แสดง 🌐)"),
   keygroup: z.string().max(200, LIMIT_NAME).optional().describe("id กลุ่ม key ผสม — fields ที่มี keygroup เดียวกันรวมเป็น key เดียว (compound unique index เช่น holdingcode+itemcode+barcode; แสดง ⛓) — ส่งสตริงว่างเพื่อออกจากกลุ่ม"),
   keygroupunique: z.boolean().optional().describe("กลุ่ม key ผสมห้ามซ้ำ (default true = compound unique index) — false = compound index ธรรมดา ซ้ำได้ เพื่อค้นเร็ว"),
 };
@@ -334,6 +521,19 @@ const fieldL1 = z.object({
 const fieldInputSchema = z.object({
   ...fieldShape,
   children: z.array(fieldL1).max(300, LIMIT_FIELDS).optional().describe(childrenDesc),
+});
+const indexInputSchema = z.object({
+  fields: z
+    .array(
+      z.object({
+        field: z.string().min(1, { error: "[INDEX_FIELD_EMPTY] ต้องระบุ field id หรือ dotted path" }).max(200, LIMIT_NAME).describe("field id หรือ dotted path เช่น address.city"),
+        direction: z.union([z.literal(1), z.literal(-1)], { error: "[INDEX_DIRECTION_INVALID] direction ต้องเป็น 1 หรือ -1" }).optional().describe("1 = น้อยไปมาก, -1 = มากไปน้อย (default 1)"),
+      }),
+    )
+    .min(1, { error: "[INDEX_EMPTY] index ต้องมีอย่างน้อย 1 field" })
+    .max(32, LIMIT_INDEX_FIELDS),
+  unique: z.boolean().optional().describe("true = ห้ามค่าซ้ำทั้งชุด"),
+  sparse: z.boolean().optional().describe("true = ไม่ index เอกสารที่ไม่มีสมาชิกเลย; compound index จะเข้าเมื่อมีอย่างน้อย 1 field"),
 });
 
 // ---------- annotations (hint ให้ client ตัดสิน auto-approve) ----------
@@ -353,7 +553,8 @@ const INSTRUCTIONS = `MongoModel — เครื่องมือออกแ�
 2. description ของทุก collection/field บังคับภาษาไทย (มีอักขระไทยอย่างน้อย 1 ตัว) — เช็กจุดที่ขาดด้วย check_descriptions
 3. relation เป็น field→field เสมอ และต้องอ้าง business key ของฝั่งแม่ (เช่น code, holdingcode) ห้ามอ้าง guidfixed (identity ภายใน ไม่พกพาข้ามเครื่อง) — ทิศแม่→ลูก (ฝั่งลูกถือ FK)
 4. field ซ้อน (children) รับลึก 2 ชั้นต่อคำสั่ง — ลึกกว่านั้นใช้ add_field พร้อม parent แบบ dotted path
-5. สร้างผังใหม่ทั้งก้อนใช้ replace_diagram (ระวัง: เขียนทับทั้ง diagram); แก้ทีละจุดใช้ add_*/update_*/delete_*
+5. indexes เพิ่มระดับ collection รับ field id หรือ dotted path; แก้ทั้งชุดด้วย update_collection.indexes ([] = ล้าง)
+6. สร้างผังใหม่ทั้งก้อนใช้ replace_diagram (ระวัง: เขียนทับทั้ง diagram); แก้ทีละจุดใช้ add_*/update_*/delete_*
 Workflow แนะนำ: list_projects → list_diagrams → get_diagram (detail:"summary" ประหยัดโทเคน) → แก้ไข → check_descriptions + lint_model → generate_code (mongosh/go/mongoose/typescript/markdown/sample/json/wiki)
 ทุก mutation บันทึกอัตโนมัติ (UI ผู้ใช้ refresh เอง) — แก้พลาดย้อนได้ด้วย list_revisions + restore_revision · error ทุกตัวมี machine code นำหน้า เช่น [PROJECT_NOT_FOUND]`;
 
@@ -523,7 +724,6 @@ export function createServer(): McpServer {
         ...(f.required && { required: true }),
         ...(f.unique && { unique: true }),
         ...(f.key && { key: true }),
-        ...(f.sessionkey && { sessionkey: true }),
         ...(f.keygroup !== undefined && { keygroup: f.keygroup }),
         ...(f.keygroupunique !== undefined && { keygroupunique: f.keygroupunique }),
         ...(f.enum !== undefined && { enum: f.enum }),
@@ -562,12 +762,25 @@ export function createServer(): McpServer {
       return ok({
         id: hit.id,
         name: hit.name,
-        collections: (hit.d.nodes as N[]).map((n) => ({
-          id: n.id,
-          label: n.data.label,
-          description: n.data.description,
-          fields: n.data.fields.map(summarizeField),
-        })),
+        collections: (hit.d.nodes as N[]).map((n) => {
+          const pathById = new Map(fieldPathEntries(n.data.fields).map(({ path, field }) => [field.id, path]));
+          return {
+            id: n.id,
+            label: n.data.label,
+            description: n.data.description,
+            fields: n.data.fields.map(summarizeField),
+            ...((n.data.indexes?.length ?? 0) > 0 && {
+              indexes: n.data.indexes?.map((index) => ({
+                fields: index.fields.map((part) => ({
+                  field: pathById.get(part.field) ?? part.field,
+                  direction: part.direction,
+                })),
+                ...(index.unique && { unique: true }),
+                ...(index.sparse && { sparse: true }),
+              })),
+            }),
+          };
+        }),
         relations,
       });
     }
@@ -578,7 +791,7 @@ export function createServer(): McpServer {
     {
       title: "ตรวจโมเดล",
       description:
-        "ตรวจโมเดลด้วยกฎที่เครื่องจับได้: ฟิลด์เงินที่ยังเป็น Number (ควร Decimal128), unique บนฟิลด์ที่ไม่ required (ชนกันที่ null), สมาชิก key ผสมห้ามซ้ำที่ไม่ required, FK ที่ชนิดไม่ตรงกับปลายทาง, collection ที่มี FK แต่ไม่มี session key (index ไม่ scope ตามผู้เช่า), array ที่ไม่รู้ shape / ไม่มีขอบเขต, และ shape ของ array *names — ไม่ระบุ diagram = ตรวจทั้ง project",
+        "ตรวจโมเดลด้วยกฎที่เครื่องจับได้: ฟิลด์เงินที่ยังเป็น Number, index ผิด/ซ้ำ, unique บนฟิลด์ที่ไม่ required, สมาชิก key ผสมห้ามซ้ำที่ไม่ required, FK ที่ชนิดไม่ตรงกับปลายทาง, array ที่ไม่รู้ shape/ไม่มีขอบเขต และ shape ของ array *names — ไม่ระบุ diagram = ตรวจทั้ง project",
       inputSchema: {
         project: projectParam,
         diagram: diagramParam,
@@ -592,27 +805,26 @@ export function createServer(): McpServer {
     async ({ project, diagram, level }) => {
       const p = await requireProject(project);
       if ("error" in p) return err(p.error);
-      const allNodes = Object.values(p.diagrams).flatMap((d) => (d.nodes ?? []) as unknown as GenNode[]);
-      let targets: [string, StoredDiagram][];
-      if (diagram === undefined) {
-        targets = Object.entries(p.diagrams);
-      } else {
+      let selectedId: string | undefined;
+      if (diagram !== undefined) {
         const hit = findDiagram(p, diagram);
         if ("error" in hit) return err(hit.error); // มี [DIAGRAM_NOT_FOUND] + รายชื่อที่มีอยู่แล้ว
-        targets = [[hit.id, hit.d]];
+        selectedId = hit.id;
       }
-      const out = [];
-      for (const [id, d] of targets) {
-        const name = p.tabs.find((t) => t.id === id)?.name ?? id;
-        let issues = lintModel(
-          (d.nodes ?? []) as unknown as GenNode[],
-          (d.edges ?? []) as unknown as GenEdge[],
-          allNodes,
-        );
-        if (level === "error") issues = issues.filter((i) => i.level === "error");
-        if (issues.length) out.push({ diagram: name, issues });
-      }
-      const total = out.reduce((n, x) => n + x.issues.length, 0);
+      const diagrams = Object.entries(p.diagrams).map(([id, d]) => ({
+        id,
+        name: p.tabs.find((tab) => tab.id === id)?.name ?? id,
+        nodes: (d.nodes ?? []) as unknown as GenNode[],
+        edges: (d.edges ?? []) as unknown as GenEdge[],
+      }));
+      let issues = lintProject(diagrams);
+      if (selectedId !== undefined) issues = issues.filter((issue) => issue.diagramId === selectedId);
+      if (level === "error") issues = issues.filter((issue) => issue.level === "error");
+      const out = diagrams.flatMap((d) => {
+        const found = issues.filter((issue) => issue.diagramId === d.id);
+        return found.length ? [{ diagram: d.name, issues: found }] : [];
+      });
+      const total = issues.length;
       return ok(total === 0 ? "ไม่พบปัญหา" : { total, diagrams: out });
     }
   );
@@ -769,10 +981,15 @@ export function createServer(): McpServer {
           .max(300, LIMIT_FIELDS)
           .optional()
           .describe("ฟิลด์เริ่มต้น — ทุก field ต้องมี description ภาษาไทย (รวม children)"),
+        indexes: z
+          .array(indexInputSchema)
+          .max(63, LIMIT_INDEXES)
+          .optional()
+          .describe("indexes ที่กำหนดเพิ่ม — field รับ id หรือ dotted path; ลำดับสมาชิกคือลำดับ compound index"),
       },
       annotations: DESTRUCTIVE, // replace: true ลบของเก่าพร้อมเส้นที่เกี่ยว
     },
-    withRetry(async ({ project, diagram, label, description, replace, x, y, fields }) => {
+    withRetry(async ({ project, diagram, label, description, replace, x, y, fields, indexes }) => {
       const p = await requireProject(project);
       if ("error" in p) return err(p.error);
       const hit = findDiagram(p, diagram);
@@ -791,6 +1008,19 @@ export function createServer(): McpServer {
         const fErr = fieldsThaiError(fields) ?? fieldsDepthError(fields);
         if (fErr) return err(fErr);
       }
+      const nodeFields: Field[] =
+        fields?.map(toField) ??
+        [
+          {
+            id: uid(),
+            name: "_id",
+            type: "ObjectId",
+            required: true,
+            description: "รหัส ObjectID ของเอกสาร",
+          },
+        ];
+      const nodeIndexes = toIndexes(nodeFields, indexes ?? []);
+      if ("error" in nodeIndexes) return err(nodeIndexes.error);
       let position = { x: x ?? 0, y: y ?? 0 };
       let edgesRemoved = 0;
       if (dup) {
@@ -809,17 +1039,8 @@ export function createServer(): McpServer {
         data: {
           label,
           description,
-          fields:
-            fields?.map(toField) ??
-            [
-              {
-                id: uid(),
-                name: "_id",
-                type: "ObjectId",
-                required: true,
-                description: "รหัส ObjectID ของเอกสาร",
-              },
-            ],
+          fields: nodeFields,
+          ...(nodeIndexes.length && { indexes: nodeIndexes }),
         },
       };
       nodes.push(node);
@@ -838,17 +1059,22 @@ export function createServer(): McpServer {
     "update_collection",
     {
       title: "แก้ collection",
-      description: "แก้ชื่อ / คำอธิบาย collection — หลังแก้ collection ต้องมีคำอธิบายภาษาไทยเสมอ",
+      description: "แก้ชื่อ / คำอธิบาย / indexes ของ collection — ส่ง indexes:[] เพื่อล้าง; หลังแก้ collection ต้องมีคำอธิบายภาษาไทยเสมอ",
       inputSchema: {
         project: projectParam,
         diagram: diagramParam,
         collection: collectionParam,
         label: z.string().min(1).max(200, LIMIT_NAME).optional(),
         description: z.string().optional().describe("ต้องเป็นภาษาไทย (ลบคำอธิบายเดิมไม่ได้)"),
+        indexes: z
+          .array(indexInputSchema)
+          .max(63, LIMIT_INDEXES)
+          .optional()
+          .describe("แทนที่ indexes ที่กำหนดเพิ่มทั้งชุด; field รับ id หรือ dotted path; [] = ล้างทั้งหมด"),
       },
       annotations: WRITE_IDEM,
     },
-    withRetry(async ({ project, diagram, collection, label, description }) => {
+    withRetry(async ({ project, diagram, collection, label, description, indexes }) => {
       const p = await requireProject(project);
       if ("error" in p) return err(p.error);
       const hit = findDiagram(p, diagram);
@@ -860,10 +1086,18 @@ export function createServer(): McpServer {
       // หลังแก้ต้องเหลือคำอธิบายไทยเสมอ — ถ้ายังไม่มีให้ส่ง description ภาษาไทยมาด้วย
       const dErr = thaiDescError(`collection "${newLabel}"`, newDesc);
       if (dErr) return err(dErr);
+      const nextIndexes = indexes === undefined
+        ? undefined
+        : toIndexes(node.data.fields, indexes, node.data.indexes, referenceFieldIds(p, node.id));
+      if (nextIndexes && "error" in nextIndexes) return err(nextIndexes.error);
       node.data.label = newLabel;
       node.data.description = newDesc;
+      if (nextIndexes !== undefined) {
+        if (nextIndexes.length) node.data.indexes = nextIndexes;
+        else delete node.data.indexes;
+      }
       await save(project, p);
-      return ok({ id: node.id, label: node.data.label });
+      return ok({ id: node.id, label: node.data.label, indexes: node.data.indexes?.length ?? 0 });
     })
   );
 
@@ -977,9 +1211,8 @@ export function createServer(): McpServer {
         enum: z.array(z.string()).optional(),
         default: z.string().optional(),
         unique: z.boolean().optional(),
-    bounded: z.boolean().optional().describe("array ของ object: ยืนยันว่ามีขอบเขตแล้ว (linter ไม่เตือนเพดาน 16MB)"),
+        bounded: z.boolean().optional().describe("array ของ object: ยืนยันว่ามีขอบเขตแล้ว (linter ไม่เตือนเพดาน 16MB)"),
         key: z.boolean().optional().describe("business key — field ที่ collection อื่นใช้อ้างอิง (แสดง 🔑)"),
-        sessionkey: z.boolean().optional().describe("session/tenant scope key เช่น holdingcode (แสดง 🌐)"),
         keygroup: z.string().max(200, LIMIT_NAME).optional().describe("id กลุ่ม key ผสม — fields ที่มี keygroup เดียวกันรวมเป็น key เดียว (compound unique index; แสดง ⛓)"),
         keygroupunique: z.boolean().optional().describe("กลุ่ม key ผสมห้ามซ้ำ (default true) — false = compound index ธรรมดา ซ้ำได้"),
         children: z.array(fieldInputSchema).max(300, LIMIT_FIELDS).optional().describe(childrenDesc),
@@ -1007,10 +1240,12 @@ export function createServer(): McpServer {
       }
       const field = toField(input as FieldInput);
       container.push(field);
-      // ฟิลด์ระดับบนที่ติดธง key/sessionkey/keygroup → pin ขึ้นต่อท้ายกลุ่ม key ด้านบน (PK/_id → key เก่า → ตัวใหม่)
-      if (parent === undefined && (field.key || field.sessionkey || field.keygroup)) {
+      // ฟิลด์ระดับบนที่ติดธง key/keygroup → pin ขึ้นต่อท้ายกลุ่ม key ด้านบน (PK/_id → key เก่า → ตัวใหม่)
+      if (parent === undefined && (field.key || field.keygroup)) {
         pinKeyField(container, field);
       }
+      const indexErr = nodeIndexError(p, node);
+      if (indexErr) return err(indexErr);
       await save(project, p);
       return ok({ id: field.id, name: field.name });
     })
@@ -1035,9 +1270,8 @@ export function createServer(): McpServer {
         enum: z.array(z.string()).optional().describe("ส่ง [] เพื่อลบ enum"),
         default: z.string().optional().describe("ส่งสตริงว่างเพื่อลบค่าเริ่มต้น"),
         unique: z.boolean().optional(),
-    bounded: z.boolean().optional().describe("array ของ object: ยืนยันว่ามีขอบเขตแล้ว (linter ไม่เตือนเพดาน 16MB)"),
+        bounded: z.boolean().optional().describe("array ของ object: ยืนยันว่ามีขอบเขตแล้ว (linter ไม่เตือนเพดาน 16MB)"),
         key: z.boolean().optional().describe("business key — field ที่ collection อื่นใช้อ้างอิง (แสดง 🔑)"),
-        sessionkey: z.boolean().optional().describe("session/tenant scope key เช่น holdingcode (แสดง 🌐)"),
         keygroup: z.string().max(200, LIMIT_NAME).optional().describe("id กลุ่ม key ผสม (แสดง ⛓) — ส่งสตริงว่างเพื่อออกจากกลุ่ม"),
         keygroupunique: z.boolean().optional().describe("กลุ่ม key ผสมห้ามซ้ำ (default true) — false = compound index ธรรมดา ซ้ำได้"),
         children: z
@@ -1069,13 +1303,26 @@ export function createServer(): McpServer {
         const cErr = fieldsThaiError(children) ?? fieldsDepthError(children, ref);
         if (cErr) return err(cErr);
       }
+      const nextType = patch.type ?? f.type;
+      const nextOf = nextType === "Array"
+        ? patch.of ?? (f.type === "Array" ? f.of : undefined)
+        : undefined;
+      const canKeepChildren = nextType === "Object" || (nextType === "Array" && nextOf === "Object");
+      if (children !== undefined && !canKeepChildren) {
+        return err("[FIELD_CHILDREN_TYPE_INVALID] children ใช้ได้เฉพาะ Object หรือ Array<Object>");
+      }
       // จำ "เป็น key อยู่ก่อนไหม" ไว้ก่อนแก้ — pin เฉพาะตอนเพิ่งกลายเป็น key (ห้ามเรียงกลุ่ม key เดิมใหม่)
-      const wasKey = Boolean(f.key || f.sessionkey || f.keygroup);
+      const wasKey = Boolean(f.key || f.keygroup);
+      const replacingChildren = children !== undefined || !canKeepChildren;
+      const replacedChildIds = !replacingChildren
+        ? new Set<string>()
+        : new Set((f.children ?? []).flatMap((child) => [...fieldIds(child)]));
       if (patch.name !== undefined) f.name = patch.name;
       if (patch.type !== undefined) f.type = patch.type;
       if (patch.required !== undefined) f.required = patch.required;
       f.description = newDesc;
-      if (patch.of !== undefined) f.of = patch.of;
+      if (nextType !== "Array") delete f.of;
+      else if (patch.of !== undefined) f.of = patch.of;
       if (patch.enum !== undefined) {
         if (patch.enum.length === 0) delete f.enum;
         else f.enum = patch.enum;
@@ -1087,23 +1334,30 @@ export function createServer(): McpServer {
       if (patch.unique !== undefined) f.unique = patch.unique;
       if (patch.bounded !== undefined) f.bounded = patch.bounded;
       if (patch.key !== undefined) f.key = patch.key;
-      if (patch.sessionkey !== undefined) f.sessionkey = patch.sessionkey;
       if (patch.keygroup !== undefined) {
         if (patch.keygroup === "") delete f.keygroup;
         else f.keygroup = patch.keygroup;
       }
       if (patch.keygroupunique !== undefined) f.keygroupunique = patch.keygroupunique;
       if (children !== undefined) f.children = children.map(toField);
-      // ฟิลด์ระดับบนที่เพิ่งติดธง key/sessionkey/keygroup → pin ขึ้นต่อท้ายกลุ่ม key เหมือน add_field/UI
+      else if (!canKeepChildren) {
+        delete f.children;
+        delete f.collapsed;
+      }
+      const indexesRemoved = replacedChildIds.size ? dropIndexesTouching(node, replacedChildIds) : 0;
+      const edgesRemoved = replacedChildIds.size ? dropEdgesTouchingFields(p, node.id, replacedChildIds) : 0;
+      // ฟิลด์ระดับบนที่เพิ่งติดธง key/keygroup → pin ขึ้นต่อท้ายกลุ่ม key เหมือน add_field/UI
       if (
         !wasKey &&
-        Boolean(f.key || f.sessionkey || f.keygroup) &&
+        Boolean(f.key || f.keygroup) &&
         fh.container === node.data.fields
       ) {
         pinKeyField(fh.container, f);
       }
+      const indexErr = nodeIndexError(p, node);
+      if (indexErr) return err(indexErr);
       await save(project, p);
-      return ok({ id: f.id, name: f.name });
+      return ok({ id: f.id, name: f.name, indexesRemoved, edgesRemoved });
     })
   );
 
@@ -1129,18 +1383,13 @@ export function createServer(): McpServer {
       if ("error" in node) return err(node.error);
       const fh = findField(node.data.fields, ref);
       if ("error" in fh) return err(fh.error);
+      const removedIds = fieldIds(fh.field);
       fh.container.splice(fh.container.indexOf(fh.field), 1);
-      // กวาดเส้นที่ผูกกับ field นี้ทั้งฝั่งต้นทาง (FK, -s) และฝั่งถูกอ้าง (business key, -t)
-      // ในทุก diagram — เส้นข้าม tab เก็บใน diagram ต้นทาง (tab อื่น) แบบเดียวกับ delete_collection
-      for (const dd of Object.values(p.diagrams)) {
-        dd.edges = (dd.edges as E[]).filter(
-          (e) =>
-            !(e.source === node.id && e.sourceHandle === `${fh.field.id}-s`) &&
-            !(e.target === node.id && e.targetHandle === `${fh.field.id}-t`)
-        );
-      }
+      const indexesRemoved = dropIndexesTouching(node, removedIds);
+      // กวาดเส้นทั้งฝั่งต้นทาง/ปลายทางในทุก diagram (รวมเส้นข้าม tab)
+      const edgesRemoved = dropEdgesTouchingFields(p, node.id, removedIds);
       await save(project, p);
-      return ok(`ลบ field "${fh.field.name}" แล้ว`);
+      return ok({ message: `ลบ field "${fh.field.name}" แล้ว`, indexesRemoved, edgesRemoved });
     })
   );
 
@@ -1156,9 +1405,9 @@ export function createServer(): McpServer {
         project: projectParam,
         diagram: diagramParam,
         collection: collectionParam.describe("collection ต้นทาง"),
-        field: z.string().describe("id หรือชื่อฟิลด์ต้นทาง (ระดับบน)"),
+        field: z.string().describe("id หรือ dotted path ของฟิลด์ต้นทาง เช่น address.holdingcode"),
         target: z.string().describe("node id หรือ label ของ collection เป้าหมาย"),
-        targetfield: z.string().describe("id หรือชื่อฟิลด์เป้าหมายที่ถูกอ้าง (business key เช่น code — relation เป็น field→field เสมอ ห้ามอ้าง guidfixed)"),
+        targetfield: z.string().describe("id หรือ dotted path ของฟิลด์เป้าหมายที่ถูกอ้าง (business key เช่น code — relation เป็น field→field เสมอ ห้ามอ้าง guidfixed)"),
         kind: z.enum(["reference", "embed"]).optional().describe("default reference"),
         cardinality: z.enum(["1-1", "1-n", "n-n"]).optional(),
       },
@@ -1199,7 +1448,7 @@ export function createServer(): McpServer {
         (e) => !(e.source === node.id && e.sourceHandle === `${fh.field.id}-s`)
       );
       const edge: E = {
-        id: `e_${node.data.label}_${fh.field.name}_${targetNode.data.label}`,
+        id: `e_${node.id}_${fh.field.id}_${targetNode.id}_${tf.field.id}`,
         source: node.id,
         sourceHandle: `${fh.field.id}-s`,
         target: targetNode.id,
@@ -1213,6 +1462,8 @@ export function createServer(): McpServer {
       };
       edges.push(edge);
       hit.d.edges = edges;
+      const indexErr = nodeIndexError(p, node);
+      if (indexErr) return err(indexErr);
       await save(project, p);
       return ok({
         id: edge.id,
@@ -1288,6 +1539,11 @@ export function createServer(): McpServer {
                 .max(300, LIMIT_FIELDS)
                 .optional()
                 .describe("ทุก field ต้องมี description ภาษาไทย (รวม children — ซ้อนได้ 2 ชั้นต่อคำสั่ง)"),
+              indexes: z
+                .array(indexInputSchema)
+                .max(63, LIMIT_INDEXES)
+                .optional()
+                .describe("indexes ที่กำหนดเพิ่ม — field รับ id หรือ dotted path"),
             })
           )
           .min(1)
@@ -1296,9 +1552,9 @@ export function createServer(): McpServer {
           .array(
             z.object({
               collection: z.string().describe("label collection ต้นทาง"),
-              field: z.string().describe("ชื่อฟิลด์ต้นทาง"),
+              field: z.string().describe("dotted path ของฟิลด์ต้นทาง"),
               target: z.string().describe("label collection เป้าหมาย"),
-              targetfield: z.string().describe("ชื่อฟิลด์เป้าหมายที่ถูกอ้าง (business key เช่น code — field→field เสมอ ห้ามอ้าง guidfixed)"),
+              targetfield: z.string().describe("dotted path ของฟิลด์เป้าหมายที่ถูกอ้าง (business key เช่น code — field→field เสมอ ห้ามอ้าง guidfixed)"),
               kind: z.enum(["reference", "embed"]).optional(),
               cardinality: z.enum(["1-1", "1-n", "n-n"]).optional(),
             })
@@ -1325,28 +1581,35 @@ export function createServer(): McpServer {
           if (fErr) return err(fErr);
         }
       }
-      // สร้าง nodes (id ใหม่ทั้งหมด)
-      const nodes: N[] = collections.map((c, i) => ({
-        id: uid(),
-        type: "collection",
-        position: { x: c.x ?? 120 + i * 40, y: c.y ?? 120 + i * 40 },
-        ...(c.width !== undefined && { width: c.width }),
-        data: {
-          label: c.label,
-          description: c.description,
-          fields:
-            c.fields?.map(toField) ??
-            [
-              {
-                id: uid(),
-                name: "_id",
-                type: "ObjectId" as const,
-                required: true,
-                description: "รหัส ObjectID ของเอกสาร",
-              },
-            ],
-        },
-      }));
+      // สร้าง nodes (id ใหม่ทั้งหมด) + resolve index path เป็น field id ก่อนแตะ diagram เดิม
+      const nodes: N[] = [];
+      for (const [i, c] of collections.entries()) {
+        const nodeFields: Field[] =
+          c.fields?.map(toField) ??
+          [
+            {
+              id: uid(),
+              name: "_id",
+              type: "ObjectId" as const,
+              required: true,
+              description: "รหัส ObjectID ของเอกสาร",
+            },
+          ];
+        const indexes = toIndexes(nodeFields, c.indexes ?? []);
+        if ("error" in indexes) return err(`[INVALID_INDEX] collection "${c.label}": ${indexes.error}`);
+        nodes.push({
+          id: uid(),
+          type: "collection",
+          position: { x: c.x ?? 120 + i * 40, y: c.y ?? 120 + i * 40 },
+          ...(c.width !== undefined && { width: c.width }),
+          data: {
+            label: c.label,
+            description: c.description,
+            fields: nodeFields,
+            ...(indexes.length && { indexes }),
+          },
+        });
+      }
       const nodeByLabel = new Map(nodes.map((n) => [n.data.label, n]));
       // สร้าง edges (อ้าง field ด้วยชื่อ → id ใหม่)
       const edges: E[] = [];
@@ -1357,18 +1620,18 @@ export function createServer(): McpServer {
         const tgt = nodeByLabel.get(r.target);
         if (!tgt)
           return err(`[COLLECTION_NOT_FOUND] ไม่พบ collection เป้าหมาย "${r.target}" ใน payload`);
-        const f = src.data.fields.find((x) => x.name === r.field);
-        if (!f)
-          return err(`[FIELD_NOT_FOUND] ไม่พบ field "${r.field}" ใน collection "${r.collection}"`);
-        const tf = tgt.data.fields.find((x) => x.name === r.targetfield);
-        if (!tf)
-          return err(`[FIELD_NOT_FOUND] ไม่พบ field เป้าหมาย "${r.targetfield}" ใน collection "${r.target}"`);
+        const fh = findField(src.data.fields, r.field);
+        if ("error" in fh) return err(`${fh.error} ใน collection "${r.collection}"`);
+        const tfh = findField(tgt.data.fields, r.targetfield);
+        if ("error" in tfh) return err(`${tfh.error} ใน collection "${r.target}"`);
+        const f = fh.field;
+        const tf = tfh.field;
         // กฎเดียวกับ add_relation — validate ก่อนเขียน (all-or-nothing)
         const gErr = guidfixedTargetError(r.target, tf.name);
         if (gErr) return err(gErr);
         const embed = r.kind === "embed";
         edges.push({
-          id: `e_${src.data.label}_${f.name}_${tgt.data.label}`,
+          id: `e_${src.id}_${f.id}_${tgt.id}_${tf.id}`,
           source: src.id,
           sourceHandle: `${f.id}-s`,
           target: tgt.id,
@@ -1383,6 +1646,10 @@ export function createServer(): McpServer {
           }),
         });
       }
+      const indexLimit = lintProject([
+        { id: hit.id, name: hit.name, nodes: nodes.map(toGenNode), edges: edges.map(toGenEdge) },
+      ]).find((issue) => issue.rule === "too-many-indexes");
+      if (indexLimit) return err(`[TOO_MANY_INDEXES] ${indexLimit.message}`);
       // node id เดิมหายหมด (สร้างใหม่ทั้งชุด) — กวาดเส้นข้าม tab ใน diagram อื่นที่ยังชี้ id เก่า
       // ไม่งั้น edge ค้างชี้ node ที่ไม่มีจริง = data corruption เงียบ (crossref/lint/codegen resolve ไม่เจอ)
       const oldIds = new Set((hit.d.nodes as N[]).map((n) => n.id));

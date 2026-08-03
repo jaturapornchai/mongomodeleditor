@@ -224,7 +224,7 @@ export class RevConflictError extends Error {
 
 /**
  * บันทึก project ทั้งก้อน + เพิ่ม rev (ทั้ง project และ workspace) — auto save ฝั่ง server
- * ส่ง expectedRev มาด้วยเพื่อกัน lost update: UI autosave ทุก 3 วิ และ AI แก้ผ่าน MCP
+ * ส่ง expectedRev มาด้วยเพื่อกัน lost update: UI autosave 400ms/poll fallback 1 วิ และ AI แก้ผ่าน MCP
  * พร้อมกันได้ ใครเขียนช้ากว่าจะทับงานอีกฝั่งหายเงียบถ้าไม่เช็ค
  */
 export function saveProject(name: string, data: ProjectData, expectedRev?: number): Promise<number> {

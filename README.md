@@ -26,14 +26,16 @@
 - ลากวาง node บน canvas, **ลากขอบขวาปรับความกว้างได้** (จำค่าถาวร)
 - แก้ชื่อแบบ inline (ดับเบิลคลิกที่หัว), ทำซ้ำ (Ctrl+D / ปุ่ม ⧉), ลบ (มียืนยันถ้ามีฟิลด์)
 - ใส่คำอธิบายคอลเลกชัน (แสดง inline ใต้หัว)
-- **แถบ key ใต้หัวการ์ด** — สรุป key ทั้งหมดของคอลเลกชัน (PK / 🔑 / 🌐 / ⛓ key ผสม) จุดลากเส้นของ key อยู่ที่แถบนี้ พร้อม badge `← N` บอกว่าถูกอ้างจากกี่คอลเลกชันในแท็บ
+- **แถบ key ใต้หัวการ์ด** — สรุป key ทั้งหมดของคอลเลกชัน (PK / 🔑 / ⛓ key ผสม) จุดลากเส้นของ key อยู่ที่แถบนี้ พร้อม badge `← N` บอกว่าถูกอ้างจากกี่คอลเลกชันในแท็บ
+- **Indexes เพิ่มเติมระดับคอลเลกชัน** — กำหนด compound index ได้หลายชุด เลือกลำดับขึ้น/ลง, `unique` และ `sparse`; ใช้ dotted path กับฟิลด์ซ้อนได้
+- **LOD เมื่อซูมออก** — การ์ดย่อเหลือ key, ฟิลด์ที่มีเส้นเชื่อม และยอดรวม ลดความรกของผังใหญ่โดยเส้นไม่หาย
 - **ปุ่ม ▦ จัดผัง** — เรียง node อัตโนมัติตามความสัมพันธ์ (master ซ้าย → transaction ขวา) ไม่ทับกัน
 
 ### ฟิลด์ (Field)
 - 9 ชนิด: `String` `Number` `Boolean` `Date` `ObjectId` `Array` `Object` `Decimal128` `Mixed`
 - `_id` เป็น Primary Key (🔑) อัตโนมัติ
 - ตั้ง **required** (`*`), **unique index** (`U`), **enum** + **ค่าเริ่มต้น (default)** ผ่าน popup
-- ธง key เชิงออกแบบ: **🔑 business key** (ฟิลด์ที่คอลเลกชันอื่นใช้อ้าง) · **🌐 session key** (tenant scope เช่น `holdingcode`) · **⛓ key ผสม** (`keygroup` — รวมหลายฟิลด์เป็น compound index เลือกโหมด **ห้ามซ้ำ/ซ้ำได้**) — ฟิลด์ที่เป็น key ถูก pin ขึ้นกลุ่มบนสุดของการ์ดเสมอ
+- ธง key เชิงออกแบบ: **🔑 business key** (ฟิลด์ที่คอลเลกชันอื่นใช้อ้าง) · **⛓ key ผสม** (`keygroup` — รวมหลายฟิลด์เป็น compound index เลือกโหมด **ห้ามซ้ำ/ซ้ำได้**) — ฟิลด์ที่เป็น key ถูก pin ขึ้นกลุ่มบนสุดของการ์ดเสมอ และ relation ระหว่าง key ผสมคู่เดียวกันแสดงเป็นเส้นสรุปเส้นเดียว
 - **ฟิลด์ซ้อน (nested)** — `Object` / `Array<Object>` มีฟิลด์ย่อยได้หลายชั้น (พับ/ขยายได้)
 - **คำอธิบายบังคับภาษาไทย** — popup คำอธิบาย (💬) validate ต้องมีอักขระไทย; จุดที่ยังขาดจะเป็น 💬 สีเหลืองเตือน (ทั้งฟิลด์และหัวคอลเลกชัน); กดเพิ่มฟิลด์แล้วเปิดช่องใส่คำอธิบายให้ทันที
 - **Array มีชนิดสมาชิก** (`Array<String>`, `Array<Object>` ฯลฯ)
@@ -46,6 +48,7 @@
 - จุดเชื่อมมีทั้ง 2 ข้างของฟิลด์ — ตอน render เลือกข้างที่หันเข้าหากันให้อัตโนมัติ (ลาก node แล้วเส้นสลับข้างเอง ไม่อ้อมหลังการ์ด)
 - **เชื่อมข้ามแท็บได้** — ปลายทางที่อยู่คนละแท็บแสดงเป็นการ์ดเสมือนเส้นประ (กดแล้วกระโดดไปแท็บนั้น)
 - **ดับเบิลคลิกเส้น** เพื่อวนชนิด: `reference`/`embed` × cardinality `1:1` / `1:N` / `N:N` (embed = เส้นประ)
+- เส้น key ผสมหลายคู่แสดงเป็นเส้นเดียว; คลิกหรือคลิกขวา **ดู mapping รายฟิลด์** ได้
 - ป้ายกำกับเส้นตามชื่อฟิลด์ + cardinality (อัปเดตตามการ rename)
 - hover node → เส้นที่เกี่ยวข้องสว่างขึ้น เส้นอื่นจางลง
 - ลากเส้นซ้ำจากฟิลด์เดิม = ย้ายปลายทาง (1 ฟิลด์ = 1 อ้างอิง)
@@ -63,14 +66,16 @@
 
 | รูปแบบ | ได้อะไร |
 |---|---|
-| **mongosh** | `db.createCollection` + `$jsonSchema` validator + `createIndex` (unique / FK / key ผสม compound) |
+| **mongosh** | `db.createCollection` + `$jsonSchema` validator + `createIndex` (unique / FK / key ผสม / indexes ที่กำหนดเพิ่ม) |
 | **Go** | `struct` ต่อคอลเลกชัน พร้อม tag `bson`/`json` (`primitive.ObjectID`, `primitive.Decimal128`, nested struct) |
-| **Mongoose** | `Schema` พร้อม `ref`, `enum`, `default`, `unique`, `required` |
+| **Mongoose** | `Schema` พร้อม `ref`, `enum`, `default`, `unique`, `required` และ compound indexes |
 | **TypeScript** | `interface` ต่อคอลเลกชัน (enum → union type, Array → `T[]`) |
 | **Markdown** | ตาราง data dictionary ภาษาไทย |
 | **Wiki** | ชุดไฟล์ `.md` โครงสร้าง wikillm (Obsidian): `Home.md` + `collections/` + `types/` พร้อม `[[wikilink]]` และ mermaid graph — มีปุ่ม **🌐 แสดงแบบ Obsidian** เปิดหน้า wiki สวยๆ ในแอปได้ทันที |
 | **ตัวอย่าง** | ตัวอย่าง JSON document ต่อคอลเลกชัน |
 | **JSON** | โครงสร้าง diagram ดิบ |
+
+ปุ่ม **🩺 ตรวจ** ตรวจทุกแท็บในโปรเจกต์ครั้งเดียวและกดผลลัพธ์เพื่อข้ามไปคอลเลกชันในแท็บที่พบปัญหาได้; หน้าสร้างโค้ดยังคงเตือนเฉพาะแท็บที่กำลังส่งออก
 
 ### 🌐 หน้า Wiki แบบ Obsidian (overlay ในหน้าเดียวกัน)
 
@@ -128,7 +133,7 @@
 | snapshot | `list_revisions` · `restore_revision` — ระบบเก็บ snapshot อัตโนมัติก่อนเขียนทุกครั้ง (ล่าสุด 20 ไฟล์ใน `data/history/`) แก้พลาดย้อนกลับได้ |
 | อ่าน/ตรวจ | `list_diagrams` · `get_diagram` (`detail: "summary"` = โครงย่อประหยัดโทเคน) · `check_descriptions` (รายงานตัวที่ยังไม่มีคำอธิบายไทย) · `lint_model` (ตรวจกฎออกแบบ เช่น ฟิลด์เงินเป็น Number, unique บนฟิลด์ไม่ required, FK ชนิดไม่ตรงปลายทาง, array ไม่มีขอบเขต) |
 | diagram | `create_diagram` · `rename_diagram` · `delete_diagram` · `switch_diagram` · `replace_diagram` (bulk import ทั้งผัง — validate ทั้งหมดก่อนแล้วเขียน atomic) |
-| collection | `add_collection` · `update_collection` · `delete_collection` · `move_collection` (ย้ายข้ามแท็บ — เส้นเดิมกลายเป็นเส้นข้ามแท็บอัตโนมัติ) |
+| collection | `add_collection` · `update_collection` (รวมการแทนที่ `indexes[]`) · `delete_collection` · `move_collection` (ย้ายข้ามแท็บ — เส้นเดิมกลายเป็นเส้นข้ามแท็บอัตโนมัติ) |
 | field | `add_field` · `update_field` · `delete_field` (รองรับ nested ด้วย `parent`/`children` และ dotted path เช่น `address.geo.lat`) |
 | relation | `add_relation` (field→field: บังคับ `targetfield` · reference/embed × cardinality) · `delete_relation` |
 | codegen | `generate_code` — mongosh / go / mongoose / typescript / markdown / sample / json / **wiki** (wikillm) |
@@ -138,7 +143,7 @@
 - `add_collection` **ปฏิเสธ label ซ้ำ**ใน diagram เดียวกัน — ส่ง `replace: true` เพื่อแทนที่ (ลบเส้นเดิมด้วย)
 - relation ต้องอ้าง **business key** ของฝั่งแม่ (เช่น `code`, `holdingcode`) — ห้ามอ้าง identity ภายในอย่าง `guidfixed` เพราะไม่พกพาข้ามเครื่อง
 - field ซ้อน (`children`) รับลึก **2 ชั้นต่อคำสั่ง** — ลึกกว่านั้นได้ error `[FIELD_TOO_DEEP]` พร้อมทางหนี: เรียก `add_field` + `parent` แบบ dotted path เติมทีละชั้น (ข้อจำกัดนี้ทำให้ schema ของ tools/list เล็กลง ~27% คือ 68KB → 50KB และไม่มี `$ref` ที่ client บางตัวปฏิเสธ)
-- input มีเพดานขนาด พร้อม error ไทย + code: ชื่อ ≤200 ตัวอักษร (`[VALUE_TOO_LONG]`) · fields ≤300/คำสั่ง (`[TOO_MANY_FIELDS]`) · collections ≤200 (`[TOO_MANY_COLLECTIONS]`) · relations ≤500 (`[TOO_MANY_RELATIONS]`)
+- input มีเพดานขนาด พร้อม error ไทย + code: ชื่อ ≤200 ตัวอักษร (`[VALUE_TOO_LONG]`) · fields ≤300/คำสั่ง (`[TOO_MANY_FIELDS]`) · explicit indexes ≤63/collection และ compound index ≤32 fields (`[TOO_MANY_INDEXES]`/`[TOO_MANY_INDEX_FIELDS]`) โดย linter นับรวม `_id`/unique/key ผสม/relation ไม่ให้เกิน 64 · collections ≤200 (`[TOO_MANY_COLLECTIONS]`) · relations ≤500 (`[TOO_MANY_RELATIONS]`)
 - **optimistic concurrency** — ทุก mutation เช็ค `rev` ก่อนเขียน ชนแล้ว retry อัตโนมัติ (อ่านใหม่-ทำซ้ำ สูงสุด 30 รอบ) — AI หลายตัวเขียนพร้อมกันงานไม่ทับกันหายเงียบ
 - ลบ field / collection / diagram แล้ว**กวาดเส้นที่เกี่ยวให้ทุก diagram** (รวมเส้นข้ามแท็บ) พร้อมรายงานจำนวนเส้นที่ลบใน response — ไม่ทิ้งเส้นค้าง ไม่ลบเงียบ
 - error ทุกตัวมี **machine code** นำหน้าข้อความไทย เช่น `[DUPLICATE_LABEL]` `[DESCRIPTION_NOT_THAI]` `[PROJECT_NOT_FOUND]` `[FIELD_TOO_DEEP]` `[REVISION_NOT_FOUND]` — parse เอาได้
@@ -194,6 +199,9 @@ npm run dev
 ```bash
 # build โปรดักชัน
 npm run build && npm start
+
+# regression tests (schema/codegen/lint/key ผสม)
+npm test
 ```
 
 > พอร์ต 3100 ตั้งไว้ใน `package.json` (`next dev -p 3100`) และ `docker-compose.yml` เปลี่ยนได้ตามสะดวก
@@ -288,6 +296,14 @@ mongomodeleditor/
         "enum": ["individual", "company"], "default": "company" },
       { "id": "customers__addresses", "name": "addresses",
         "type": "Array", "of": "Object", "description": "ที่อยู่ (ฝัง)" }
+    ],
+    "indexes": [
+      { "id": "idx_customer_type_code",
+        "fields": [
+          { "field": "customers__type", "direction": 1 },
+          { "field": "customers__code", "direction": -1 }
+        ],
+        "unique": true, "sparse": true }
     ]
   }
 }

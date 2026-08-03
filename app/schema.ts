@@ -26,7 +26,6 @@ export type Field = {
   default?: string; // ค่าเริ่มต้น (string เสมอ, codegen แปลงตามชนิด)
   unique?: boolean; // unique index
   key?: boolean; // business key — field ที่ collection อื่นใช้อ้างอิง (relation target) แสดง 🔑 ข้างชื่อ
-  sessionkey?: boolean; // session/tenant scope key (เช่น holdingcode) แสดง 🌐 ข้างชื่อ
   keygroup?: string; // id กลุ่ม key ผสม — field ระดับบนที่มี keygroup เดียวกันรวมเป็น key เดียว (compound unique index) แสดง ⛓
   keygroupunique?: boolean; // กลุ่ม key ผสมห้ามซ้ำหรือไม่ (default true = compound unique index; false = compound index ธรรมดา ซ้ำได้ เพื่อค้นเร็ว) — เก็บซ้ำทุกสมาชิก อ่านค่าจากตัวแรก
   children?: Field[]; // ฟิลด์ย่อย — มีผลเฉพาะ type==="Object" หรือ (Array && of==="Object")
@@ -34,9 +33,18 @@ export type Field = {
   collapsed?: boolean; // สถานะพับ/ขยายใน UI (codegen ไม่สน)
 };
 
+export type IndexDirection = 1 | -1;
+export type CollectionIndex = {
+  id: string;
+  fields: { field: string; direction: IndexDirection }[]; // อ้าง field id เพื่อให้ rename แล้ว index ไม่หลุด
+  unique?: boolean;
+  sparse?: boolean;
+};
+
 export type CollectionData = {
   label: string;
   fields: Field[];
+  indexes?: CollectionIndex[]; // index เพิ่มเติมนอกเหนือจาก unique/key ผสม/relation ที่ระบบสร้างให้
   description?: string;
   crossTabId?: string; // node เสมือนปลายทางเส้นข้าม tab — id ของ tab เป้าหมาย (กด node เพื่อข้ามไป)
   refHandles?: string[]; // handle id ปลายเส้นแบบ canonical (${fieldId}-t) ของเส้นที่ชี้มา
@@ -76,6 +84,62 @@ export function keyGroupsOf(fields: Field[]): { id: string; fields: Field[]; uni
   return order.map((id) => {
     const fs = map.get(id)!;
     return { id, fields: fs, unique: fs[0].keygroupunique !== false };
+  });
+}
+
+/** เดินทุก field รวม field ซ้อน พร้อม dotted path — ใช้ร่วมกันทั้ง UI, MCP, codegen และ lint */
+export function fieldPathEntries(fields: Field[], prefix = ""): { path: string; field: Field }[] {
+  return fields.flatMap((field) => {
+    const path = prefix ? `${prefix}.${field.name}` : field.name;
+    return [{ path, field }, ...fieldPathEntries(hasChildren(field) ? field.children ?? [] : [], path)];
+  });
+}
+
+export type ResolvedCollectionIndex = Omit<CollectionIndex, "fields"> & {
+  fields: { field: Field; path: string; direction: IndexDirection }[];
+};
+
+/** คืนเฉพาะ index ที่ทุก field ยังอยู่ครบ — lint จะรายงานตัวที่ resolve ไม่ได้ */
+export function resolvedCollectionIndexes(data: CollectionData): ResolvedCollectionIndex[] {
+  const byId = new Map(fieldPathEntries(data.fields).map((entry) => [entry.field.id, entry]));
+  const arrayOwner = new Map<string, string>();
+  const walkArrayOwners = (fields: Field[], inherited?: string): void => {
+    for (const field of fields) {
+      const owner = field.type === "Array" ? field.id : inherited;
+      if (owner) arrayOwner.set(field.id, owner);
+      if (
+        (field.type === "Object" || (field.type === "Array" && field.of === "Object")) &&
+        field.children?.length
+      ) walkArrayOwners(field.children, owner);
+    }
+  };
+  walkArrayOwners(data.fields);
+  const seenIds = new Set<string>();
+  const seenPatterns = new Set<string>();
+  return (data.indexes ?? []).flatMap((index) => {
+    if (!index.id.trim() || seenIds.has(index.id) || !index.fields.length || index.fields.length > 32) return [];
+    seenIds.add(index.id);
+    const memberIds = new Set<string>();
+    const paths = new Set<string>();
+    const fields = index.fields.map((part) => {
+      const entry = byId.get(part.field);
+      if (
+        !entry ||
+        (part.direction !== 1 && part.direction !== -1) ||
+        memberIds.has(part.field) ||
+        paths.has(entry.path)
+      ) return undefined;
+      memberIds.add(part.field);
+      paths.add(entry.path);
+      return { ...entry, direction: part.direction };
+    });
+    if (!fields.every(Boolean)) return [];
+    const resolved = fields as ResolvedCollectionIndex["fields"];
+    if (new Set(resolved.map((part) => arrayOwner.get(part.field.id)).filter(Boolean)).size > 1) return [];
+    const signature = indexSignature(resolved);
+    if (seenPatterns.has(signature)) return [];
+    seenPatterns.add(signature);
+    return [{ ...index, fields: resolved }];
   });
 }
 
@@ -260,9 +324,26 @@ function dupWarning(skipped: Field[]): string {
 function compoundPrefixNames(fields: Field[]): Set<string> {
   const names = new Set<string>();
   for (const g of keyGroupsOf(fields)) {
-    if (g.fields.length >= 2) names.add(g.fields[0].name);
+    if (
+      g.fields.length >= 2 &&
+      g.fields.length <= 32 &&
+      g.fields.filter((field) => field.type === "Array").length <= 1
+    ) names.add(g.fields[0].name);
   }
   return names;
+}
+
+function indexSignature(parts: { path: string; direction: IndexDirection }[]): string {
+  return JSON.stringify(parts.map((part) => [part.path, part.direction]));
+}
+
+function indexKeys(parts: { path: string; direction: IndexDirection }[]): string {
+  return parts.map((part) => `${JSON.stringify(part.path)}: ${part.direction}`).join(", ");
+}
+
+function indexOptions(index: Pick<CollectionIndex, "unique" | "sparse">): string {
+  const options = [index.unique && "unique: true", index.sparse && "sparse: true"].filter(Boolean);
+  return options.length ? `, { ${options.join(", ")} }` : "";
 }
 
 /**
@@ -275,18 +356,32 @@ function nestedUniquePaths(fields: Field[], path = ""): string[] {
   for (const f of fields) {
     const full = path ? `${path}.${f.name}` : f.name;
     if (path && f.unique) out.push(full);
-    if (f.children?.length) out.push(...nestedUniquePaths(f.children, full));
+    if (hasChildren(f)) out.push(...nestedUniquePaths(f.children ?? [], full));
   }
   return out;
 }
 
-/**
- * field ที่เป็น session/tenant scope (🌐) เรียงตามลำดับใน collection — ใช้เป็นหัวของ index
- * ทุกตัว เพราะ query จริงในระบบหลายผู้เช่ากรอง tenant ก่อนเสมอ (index ที่ไม่ได้ขึ้นต้นด้วย
- * tenant key จะถูกใช้ไม่ได้จริง MongoDB ต้องสแกนข้ามผู้เช่าแล้วค่อยกรองทีหลัง)
- */
-function sessionKeyNames(fields: Field[]): string[] {
-  return fields.filter((f) => f.sessionkey).map((f) => f.name);
+/** explicit index ที่ codegen ใช้จริง — ตัดรูปแบบที่ unique/keygroup สร้างให้อยู่แล้ว */
+function effectiveExplicitIndexes(data: CollectionData): ResolvedCollectionIndex[] {
+  const emitted = new Set<string>();
+  for (const { path, field } of fieldPathEntries(data.fields)) {
+    if (field.unique) emitted.add(indexSignature([{ path, direction: 1 }]));
+  }
+  for (const group of keyGroupsOf(data.fields)) {
+    if (
+      group.fields.length >= 2 &&
+      group.fields.length <= 32 &&
+      group.fields.filter((field) => field.type === "Array").length <= 1
+    ) {
+      emitted.add(indexSignature(group.fields.map((field) => ({ path: field.name, direction: 1 }))));
+    }
+  }
+  return resolvedCollectionIndexes(data).filter((index) => {
+    const signature = indexSignature(index.fields);
+    if (emitted.has(signature)) return false;
+    emitted.add(signature);
+    return true;
+  });
 }
 
 /** shape มาตรฐานของ array `*names` — canonical = {code, name} เท่านั้น */
@@ -431,42 +526,40 @@ export function toMongosh(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
         ? `db.${label}`
         : `db[${JSON.stringify(label)}]`;
       const prefixes = compoundPrefixNames(fields);
-      const scope = sessionKeyNames(fields);
-      for (const field of fields) {
+      const explicitIndexes = effectiveExplicitIndexes({ ...node.data, fields });
+      for (const index of explicitIndexes) {
+        if (index.fields.length) prefixes.add(index.fields[0].path);
+      }
+      const emitted = new Set<string>();
+      for (const { path, field } of fieldPathEntries(fields)) {
         const target = refs.get(refKey(node.id, field.id));
-        const note = target !== undefined ? ` // → ${target}` : "";
+        const notes = [
+          target !== undefined ? `→ ${target}` : undefined,
+          path.includes(".") && field.unique ? "ฟิลด์ซ้อน" : undefined,
+        ].filter(Boolean);
+        const note = notes.length ? ` // ${notes.join(" · ")}` : "";
         if (field.unique) {
           lines.push(
-            `${dbRef}.createIndex({ ${JSON.stringify(field.name)}: 1 }, { unique: true });${note}`,
+            `${dbRef}.createIndex({ ${JSON.stringify(path)}: 1 }, { unique: true });${note}`,
           );
+          emitted.add(indexSignature([{ path, direction: 1 }]));
         } else if (target !== undefined) {
           // unique ข้ามไม่ได้ (บังคับความไม่ซ้ำคนละแบบกับ compound) — ข้ามเฉพาะ FK index ธรรมดา
-          if (prefixes.has(field.name)) {
+          if (prefixes.has(path)) {
             lines.push(
-              `// ข้าม index ${JSON.stringify(field.name)} — key ผสมขึ้นต้นด้วยฟิลด์นี้อยู่แล้ว (index prefix)${note}`,
-            );
-          } else if (scope.length > 0 && !scope.includes(field.name)) {
-            // FK index ต้องขึ้นต้นด้วย session key (tenant scope) — ทุก query จริงกรอง tenant ก่อนเสมอ
-            // index ที่ขึ้นต้นด้วย FK เฉย ๆ ใช้ไม่ได้ ต้องสแกนข้ามผู้เช่าแล้วค่อยกรอง
-            const keys = [...scope, field.name].map((n) => `${JSON.stringify(n)}: 1`).join(", ");
-            lines.push(
-              `${dbRef}.createIndex({ ${keys} });${note} (นำด้วย session key ${scope.join(" + ")})`,
+              `// ข้าม index ${JSON.stringify(path)} — มี index ที่ขึ้นต้นด้วยฟิลด์นี้อยู่แล้ว (index prefix)${note}`,
             );
           } else {
             lines.push(
-              `${dbRef}.createIndex({ ${JSON.stringify(field.name)}: 1 });${note}`,
+              `${dbRef}.createIndex({ ${JSON.stringify(path)}: 1 });${note}`,
             );
+            emitted.add(indexSignature([{ path, direction: 1 }]));
           }
         }
       }
-      // unique ที่ตั้งไว้บน field ซ้อน — สร้างเป็น index บน dotted path (ก่อนหน้านี้หายเงียบ
-      // เพราะ loop ข้างบนวนเฉพาะ field ระดับบน ทั้งที่ mongoose ใส่ unique ให้ทุกระดับ)
-      for (const p of nestedUniquePaths(fields)) {
-        lines.push(`${dbRef}.createIndex({ ${JSON.stringify(p)}: 1 }, { unique: true }); // ฟิลด์ซ้อน`);
-      }
       // key ผสม (keygroup) → compound index (ต้องมี ≥2 field) — unique = ห้ามซ้ำ, ไม่ unique = ซ้ำได้ (index เพื่อค้นเร็ว)
       for (const g of keyGroupsOf(fields)) {
-        if (g.fields.length < 2) continue;
+        if (g.fields.length < 2 || g.fields.length > 32 || g.fields.filter((field) => field.type === "Array").length > 1) continue;
         const keys = g.fields.map((f) => `${JSON.stringify(f.name)}: 1`).join(", ");
         const names = g.fields.map((f) => f.name).join(" + ");
         lines.push(
@@ -474,6 +567,19 @@ export function toMongosh(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
             ? `${dbRef}.createIndex({ ${keys} }, { unique: true }); // key ผสม (ห้ามซ้ำ): ${names}`
             : `${dbRef}.createIndex({ ${keys} }); // key ผสม (ซ้ำได้): ${names}`,
         );
+        emitted.add(indexSignature(g.fields.map((field) => ({ path: field.name, direction: 1 as const }))));
+      }
+      for (const index of explicitIndexes) {
+        const signature = indexSignature(index.fields);
+        const names = index.fields.map((part) => part.path).join(" + ");
+        if (emitted.has(signature)) {
+          lines.push(`// ข้าม index ที่กำหนดเพิ่ม ${names} — มี index รูปแบบเดียวกันอยู่แล้ว`);
+          continue;
+        }
+        lines.push(
+          `${dbRef}.createIndex({ ${indexKeys(index.fields)} }${indexOptions(index)}); // index ที่กำหนดเพิ่ม: ${names}`,
+        );
+        emitted.add(signature);
       }
       return lines.join("\n");
     })
@@ -481,12 +587,19 @@ export function toMongosh(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
 }
 
 /** sub-schema สำหรับ nested — new mongoose.Schema กัน child ชื่อ "type" ถูกตีความเป็น type declaration */
-function mongooseSubSchema(children: Field[], indent: string): string {
+function mongooseSubSchema(
+  children: Field[],
+  indent: string,
+  refFor: (field: Field) => string | undefined,
+): string {
   const inner = `${indent}  `;
   const { fields } = dedupeFields(children);
   const lines = ["new mongoose.Schema({"];
   for (const f of fields) {
-    lines.push(`${inner}${quoteKey(f.name)}: ${mongooseValue(f, undefined, inner)},`);
+    const target = refFor(f);
+    if (target !== undefined) lines.push(`${inner}// → อ้างอิงถึง ${oneLine(target)}`);
+    const ref = f.type === "ObjectId" ? target : undefined;
+    lines.push(`${inner}${quoteKey(f.name)}: ${mongooseValue(f, ref, inner, refFor)},`);
   }
   lines.push(`${indent}}, { _id: false })`);
   return lines.join("\n");
@@ -497,12 +610,13 @@ function mongooseValue(
   field: Field,
   ref: string | undefined,
   indent: string,
+  refFor: (field: Field) => string | undefined,
 ): string {
   // path ชื่อ "type" ต้องใช้รูป { type: ... } เสมอ — shorthand เปลือยทำให้ Mongoose
   // ตีความ definition เป็น SchemaType descriptor แล้วฟิลด์หาย (mongoosejs.com/docs/schematypes.html#type-key)
   const wrapType = field.name === "type";
   if (hasChildren(field)) {
-    const sub = mongooseSubSchema(field.children ?? [], indent);
+    const sub = mongooseSubSchema(field.children ?? [], indent, refFor);
     const value = field.type === "Array" ? `[${sub}]` : sub;
     if (field.required) return `{ type: ${value}, required: true }`;
     return wrapType ? `{ type: ${value} }` : value;
@@ -561,12 +675,21 @@ export function toMongoose(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNod
       if (field.description) notes.push(oneLine(field.description));
       if (target !== undefined) notes.push(`→ อ้างอิงถึง ${oneLine(target)}`);
       if (notes.length) lines.push(`  // ${notes.join(" · ")}`);
-      lines.push(`  ${quoteKey(field.name)}: ${mongooseValue(field, ref, "  ")},`);
+      lines.push(
+        `  ${quoteKey(field.name)}: ${mongooseValue(field, ref, "  ", (nested) => refs.get(refKey(node.id, nested.id)))},`,
+      );
     }
     lines.push("});");
+    const emitted = new Set<string>();
+    for (const field of fields) {
+      if (field.unique) emitted.add(indexSignature([{ path: field.name, direction: 1 }]));
+    }
+    for (const path of nestedUniquePaths(fields)) {
+      emitted.add(indexSignature([{ path, direction: 1 }]));
+    }
     // key ผสม (keygroup) → compound index (ต้องมี ≥2 field) — unique = ห้ามซ้ำ, ไม่ unique = ซ้ำได้
     for (const g of keyGroupsOf(fields)) {
-      if (g.fields.length < 2) continue;
+      if (g.fields.length < 2 || g.fields.length > 32 || g.fields.filter((field) => field.type === "Array").length > 1) continue;
       const keys = g.fields.map((f) => `${JSON.stringify(f.name)}: 1`).join(", ");
       const names = g.fields.map((f) => f.name).join(" + ");
       lines.push(
@@ -574,6 +697,15 @@ export function toMongoose(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNod
           ? `${schemaVar}.index({ ${keys} }, { unique: true }); // key ผสม (ห้ามซ้ำ): ${names}`
           : `${schemaVar}.index({ ${keys} }); // key ผสม (ซ้ำได้): ${names}`,
       );
+      emitted.add(indexSignature(g.fields.map((field) => ({ path: field.name, direction: 1 as const }))));
+    }
+    for (const index of effectiveExplicitIndexes({ ...node.data, fields })) {
+      const signature = indexSignature(index.fields);
+      if (emitted.has(signature)) continue;
+      lines.push(
+        `${schemaVar}.index({ ${indexKeys(index.fields)} }${indexOptions(index)}); // index ที่กำหนดเพิ่ม`,
+      );
+      emitted.add(signature);
     }
     lines.push(
       `const ${modelVar} = mongoose.model(${JSON.stringify(label)}, ${schemaVar});`,
@@ -593,7 +725,11 @@ export function toMongoose(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNod
 }
 
 /** ts type ของ field — enum union > nested inline (recursive) > scalar เดิม */
-function tsType(field: Field, indent: string): string {
+function tsType(
+  field: Field,
+  indent: string,
+  refFor: (field: Field) => string | undefined,
+): string {
   const enumVals = activeEnum(field);
   if (enumVals) return enumVals.map((v) => JSON.stringify(v)).join(" | ");
   if (hasChildren(field)) {
@@ -601,8 +737,14 @@ function tsType(field: Field, indent: string): string {
     const { fields } = dedupeFields(field.children ?? []);
     const lines = ["{"];
     for (const f of fields) {
+      const target = refFor(f);
+      const notes = [
+        f.description ? oneLine(f.description) : undefined,
+        target !== undefined ? `→ อ้างอิงถึง ${oneLine(target)}` : undefined,
+      ].filter(Boolean);
+      if (notes.length) lines.push(`${inner}// ${notes.join(" · ")}`);
       lines.push(
-        `${inner}${quoteKey(f.name)}${f.required ? "" : "?"}: ${tsType(f, inner)};`,
+        `${inner}${quoteKey(f.name)}${f.required ? "" : "?"}: ${tsType(f, inner, refFor)};`,
       );
     }
     lines.push(`${indent}}`);
@@ -631,7 +773,9 @@ export function toTypeScript(nodes: GenNode[], edges: GenEdge[], allNodes?: GenN
         if (target !== undefined) notes.push(`→ อ้างอิงถึง ${oneLine(target)}`);
         if (notes.length) lines.push(`  // ${notes.join(" · ")}`);
         const optional = !field.required && field.name !== "_id" ? "?" : "";
-        lines.push(`  ${quoteKey(field.name)}${optional}: ${tsType(field, "  ")};`);
+        lines.push(
+          `  ${quoteKey(field.name)}${optional}: ${tsType(field, "  ", (nested) => refs.get(refKey(node.id, nested.id)))};`,
+        );
       }
       lines.push("}");
       return lines.join("\n");
@@ -785,7 +929,6 @@ export function toMarkdown(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNod
               : field.type;
           let desc = field.description ?? "";
           if (field.key) desc += " • 🔑 key";
-          if (field.sessionkey) desc += " • 🌐 session key";
           if (field.keygroup) desc += ` • ⛓ key ผสม (${field.keygroup}${field.keygroupunique === false ? ", ซ้ำได้" : ", ห้ามซ้ำ"})`;
           if (field.unique) desc += " • unique";
           if (enumVals) desc += ` • enum: ${enumVals.join("|")}`;
@@ -804,6 +947,19 @@ export function toMarkdown(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNod
         }
       };
       pushRows(node.data.fields, "");
+      const indexes = effectiveExplicitIndexes(node.data);
+      if (indexes.length) {
+        lines.push(
+          "",
+          "### Indexes ที่กำหนดเพิ่ม",
+          "",
+          "| ฟิลด์ (ตามลำดับ) | ห้ามซ้ำ | Sparse |",
+          "| --- | --- | --- |",
+          ...indexes.map((index) =>
+            `| ${mdEscape(index.fields.map((part) => `${part.path} ${part.direction === 1 ? "↑" : "↓"}`).join(" + "))} | ${index.unique ? "✓" : ""} | ${index.sparse ? "✓" : ""} |`,
+          ),
+        );
+      }
       return lines.join("\n");
     })
     .join("\n\n");
@@ -858,7 +1014,6 @@ function wikiDesc(field: Field): string {
   let desc = field.description ?? "";
   if (field.name === "_id" && !desc) desc = "รหัส ObjectID ของเอกสาร";
   if (field.key) desc += " • 🔑 key";
-  if (field.sessionkey) desc += " • 🌐 session key";
   if (field.keygroup) desc += ` • ⛓ key ผสม (${field.keygroup}${field.keygroupunique === false ? ", ซ้ำได้" : ", ห้ามซ้ำ"})`;
   if (field.unique) desc += " • unique";
   const enumVals = activeEnum(field);
@@ -878,10 +1033,12 @@ function wikiRelMap(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode[]): M
     const targetLabel = labelById.get(e.target);
     if (targetLabel === undefined) continue;
     const node = nodes.find((n) => n.id === e.source);
-    const fieldName = node?.data.fields.find((f) => f.id === e.sourceHandle!.slice(0, -2))?.name;
-    if (fieldName === undefined) continue;
+    const field = node
+      ? fieldPathEntries(node.data.fields).find(({ field }) => field.id === e.sourceHandle!.slice(0, -2))
+      : undefined;
+    if (field === undefined) continue;
     const rel: WikiRel = {
-      fieldName,
+      fieldName: field.path,
       targetLabel,
       kind: e.data?.kind ?? "reference",
       cardinality: e.data?.cardinality,
@@ -961,6 +1118,20 @@ function wikiCollectionNote(
   ];
   if (node.data.description) lines.push(mdEscape(node.data.description), "");
   lines.push("| Field | Type | จำเป็น | คำอธิบาย |", "|---|---|---|---|", ...rows, "");
+
+  const indexes = effectiveExplicitIndexes(node.data);
+  if (indexes.length) {
+    lines.push(
+      "## Indexes ที่กำหนดเพิ่ม",
+      "",
+      "| ฟิลด์ (ตามลำดับ) | ห้ามซ้ำ | Sparse |",
+      "|---|---|---|",
+      ...indexes.map((index) =>
+        `| ${mdEscape(index.fields.map((part) => `${part.path} ${part.direction === 1 ? "↑" : "↓"}`).join(" + "))} | ${index.unique ? "✓" : ""} | ${index.sparse ? "✓" : ""} |`,
+      ),
+      "",
+    );
+  }
 
   // ความสัมพันธ์: อ้างออก (reference/embed) + ถูกอ้างอิง
   const relLines: string[] = [];
@@ -1055,6 +1226,21 @@ export type LintIssue = {
   message: string;
 };
 
+export type ProjectLintIssue = LintIssue & { diagramId: string; diagram: string };
+export type LintDiagram = { id: string; name: string; nodes: GenNode[]; edges: GenEdge[] };
+
+/** ตรวจทุก diagram โดยใช้ node ทั้งโปรเจกต์ช่วย resolve relation ข้ามแท็บ */
+export function lintProject(diagrams: LintDiagram[]): ProjectLintIssue[] {
+  const allNodes = diagrams.flatMap((diagram) => diagram.nodes);
+  return diagrams.flatMap((diagram) =>
+    lintModel(diagram.nodes, diagram.edges, allNodes).map((issue) => ({
+      ...issue,
+      diagramId: diagram.id,
+      diagram: diagram.name,
+    })),
+  );
+}
+
 /** ชื่อฟิลด์ที่โดยความหมายคือ "เงิน" — คำนวณด้วย double แล้วปัดเศษเพี้ยน */
 const MONEY_RE = /(amount|price|cost|total|balance|sum|discount|paid|debit)/i;
 /**
@@ -1066,13 +1252,7 @@ const NOT_MONEY_RE = /^decimal|(type|rate|day|days|qty|quantity|cal|count|flag|s
 
 /** เดินทุก field รวม field ซ้อน คืน [dotted path, field] */
 function walkFields(fields: Field[], path = ""): [string, Field][] {
-  const out: [string, Field][] = [];
-  for (const f of fields) {
-    const full = path ? `${path}.${f.name}` : f.name;
-    out.push([full, f]);
-    if (f.children?.length) out.push(...walkFields(f.children, full));
-  }
-  return out;
+  return fieldPathEntries(fields, path).map(({ path: p, field }) => [p, field]);
 }
 
 /**
@@ -1100,27 +1280,32 @@ export function lintModel(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
 
   // เตรียม map ปลายทางของแต่ละเส้น: "nodeId:fieldId" -> field ปลายทาง
   // พร้อมจับเส้นค้าง (dangling): handle ชี้ node/field ที่ไม่มีอยู่แล้ว — เกิดได้ถ้าลบ field/collection แล้วเส้นไม่ถูกกวาด
-  const targetField = new Map<string, { node: GenNode; field: Field }>();
+  const targetField = new Map<string, { node: GenNode; field: Field; path: string }>();
   for (const e of edges) {
     if (!e.sourceHandle) continue;
     const srcFieldId = e.sourceHandle.replace(/-s(-[lr])?$/, "");
     const srcNode = byId.get(e.source);
-    const srcField = srcNode?.data.fields.find((f) => f.id === srcFieldId);
     const tgtNode = byId.get(e.target);
     const tgtFieldId = e.targetHandle?.replace(/-t(-[lr])?$/, "");
-    const tf = tgtNode?.data.fields.find((f) => f.id === tgtFieldId);
-    if (!srcNode || !srcField || !tgtNode || !tf) {
-      const where = !srcNode || !srcField ? "ฟิลด์/คอลเลกชันต้นทาง" : "ฟิลด์/คอลเลกชันปลายทาง";
+    const srcEntry = srcNode
+      ? fieldPathEntries(srcNode.data.fields).find(({ field }) => field.id === srcFieldId)
+      : undefined;
+    const tgtEntry = tgtNode
+      ? fieldPathEntries(tgtNode.data.fields).find(({ field }) => field.id === tgtFieldId)
+      : undefined;
+    if (!srcNode || !srcEntry || !tgtNode || !tgtEntry) {
+      const where = !srcNode || !srcEntry ? "ฟิลด์/คอลเลกชันต้นทาง" : "ฟิลด์/คอลเลกชันปลายทาง";
       issues.push({
         rule: "dangling-relation",
         level: "error",
         collection: srcNode ? collectionLabel(srcNode) : tgtNode ? collectionLabel(tgtNode) : "(ไม่พบ collection)",
-        ...(srcField !== undefined && { field: srcField.name }),
+        ...(srcEntry && { field: srcEntry.path }),
         message: `เส้นความสัมพันธ์อ้าง${where}ที่ไม่มีอยู่แล้ว — ข้อมูล relation ผิดเงียบ ๆ ควรลบเส้นนี้หรือชี้ไปฟิลด์ที่มีจริง`,
       });
       continue;
     }
-    targetField.set(`${e.source}:${srcFieldId}`, { node: tgtNode, field: tf });
+    const tf = tgtEntry.field;
+    targetField.set(`${e.source}:${srcFieldId}`, { node: tgtNode, field: tf, path: tgtEntry.path });
     // กฎห้ามอ้าง guidfixed (AGENTS.md): guidfixed เป็น identity ภายในเครื่อง ไม่ถูกพกพาตอน
     // export/import — relation ที่ชี้ไปหามันพังทันทีที่ย้ายข้อมูล ต้องชี้ business key แทน
     if (tf.name.toLowerCase() === "guidfixed") {
@@ -1128,8 +1313,8 @@ export function lintModel(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
         rule: "relation-to-guidfixed",
         level: "error",
         collection: collectionLabel(srcNode),
-        field: srcField.name,
-        message: `เส้นอ้างอิงชี้ไปที่ ${collectionLabel(tgtNode)}.${tf.name} ซึ่งเป็น identity ภายในเครื่อง (ไม่ถูกย้ายตอน export/import — ความสัมพันธ์จะพังหลังย้ายข้อมูล) ให้ชี้ business key ของฝั่งแม่แทน เช่น code`,
+        field: srcEntry.path,
+        message: `เส้นอ้างอิงชี้ไปที่ ${collectionLabel(tgtNode)}.${tgtEntry.path} ซึ่งเป็น identity ภายในเครื่อง (ไม่ถูกย้ายตอน export/import — ความสัมพันธ์จะพังหลังย้ายข้อมูล) ให้ชี้ business key ของฝั่งแม่แทน เช่น code`,
       });
     }
   }
@@ -1138,8 +1323,8 @@ export function lintModel(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
     const label = collectionLabel(node);
     const fields = node.data.fields;
     const all = walkFields(fields);
-    const hasSession = fields.some((f) => f.sessionkey);
-    const fkFields = fields.filter((f) => targetField.has(`${node.id}:${f.id}`));
+    const fkFields = all.filter(([, field]) => targetField.has(`${node.id}:${field.id}`));
+    const pathById = new Map(all.map(([path, field]) => [field.id, { path, field }]));
 
     // 0) ชื่อ collection: ซ้ำ / ว่าง / มีอักขระต้องห้าม
     if ((labelSeen.get(label) ?? 0) > 1) {
@@ -1160,15 +1345,27 @@ export function lintModel(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
       });
     }
 
-    // 1) collection ที่อ้างอิงคนอื่นแต่ไม่มี tenant scope — index จะไม่ถูก scope ตามผู้เช่า
-    // ข้อความต้องอ่านรู้เรื่องโดยไม่ต้องรู้ศัพท์ FK/tenant — ผู้ใช้ทั่วไป (ร้านเดี่ยว) ต้องรู้ว่าข้ามได้
-    if (fkFields.length > 0 && !hasSession) {
+    // 0.5) คำอธิบายภาษาไทย — กฎที่แอปบังคับแข็งที่สุด (MCP ตอบ [DESCRIPTION_NOT_THAI], UI ขึ้น 💬
+    // เหลือง, มี tool check_descriptions เฉพาะทาง) แต่ 🩺 ตรวจ กลับไม่มีกฎนี้เลย จึงเคยขึ้น
+    // "ผ่านกฎทั้งหมด 👍" ทั้งที่ check_descriptions ฝั่ง MCP รายงานว่าขาด 6 จุด — สองแหล่งความจริงขัดกัน
+    if (!node.data.description || !isThaiText(node.data.description)) {
       add({
-        rule: "no-session-key",
+        rule: "missing-thai-description",
         level: "warn",
         collection: label,
-        message: `มีฟิลด์ที่อ้างอิงถึง collection อื่น ${fkFields.length} จุด แต่ยังไม่มีฟิลด์ที่ติดเครื่องหมาย 🌐 (ฟิลด์แบ่งขอบเขตข้อมูลเมื่อหลายร้าน/หลายบริษัทใช้ระบบเดียวกัน เช่น holdingcode) — ถ้าระบบนี้ใช้กับร้าน/บริษัทเดียว ข้ามคำเตือนนี้ได้เลย`,
+        message: "ยังไม่มีคำอธิบายภาษาไทยของคอลเลกชัน — กด 💬 บนหัวการ์ดเพื่อเพิ่ม (แอปบังคับให้ทุกคอลเลกชัน/ฟิลด์มีคำอธิบายไทย)",
       });
+    }
+    for (const [path, f] of all) {
+      if (!f.description || !isThaiText(f.description)) {
+        add({
+          rule: "missing-thai-description",
+          level: "warn",
+          collection: label,
+          field: path,
+          message: "ยังไม่มีคำอธิบายภาษาไทยของฟิลด์ — กด 💬 ท้ายแถวเพื่อเพิ่ม",
+        });
+      }
     }
 
     for (const [path, f] of all) {
@@ -1269,16 +1466,203 @@ export function lintModel(nodes: GenNode[], edges: GenEdge[], allNodes?: GenNode
       }
     }
 
+    // index ที่กำหนดเพิ่ม — field อ้างด้วย id เพื่อให้ rename แล้วไม่หลุด แต่ raw JSON อาจผิดรูปได้
+    const seenIndex = new Set<string>();
+    const indexPrefixes = new Set<string>();
+    const indexIds = new Set<string>();
+    const arrayOwner = new Map<string, string>();
+    const markArrayOwner = (nested: Field[], inherited?: string): void => {
+      for (const field of nested) {
+        const owner = field.type === "Array" ? field.id : inherited;
+        if (owner) arrayOwner.set(field.id, owner);
+        if (hasChildren(field)) markArrayOwner(field.children ?? [], owner);
+      }
+    };
+    markArrayOwner(fields);
+    for (const [path, field] of all) {
+      if (field.unique) {
+        seenIndex.add(indexSignature([{ path, direction: 1 }]));
+        indexPrefixes.add(path);
+      }
+    }
+    for (const group of keyGroupsOf(fields)) {
+      if (group.fields.length >= 2) {
+        if (group.fields.length > 32) {
+          add({
+            rule: "index-too-many-fields",
+            level: "error",
+            collection: label,
+            message: `key ผสม "${group.id}" มี ${group.fields.length} ฟิลด์ — MongoDB จำกัด compound index ไม่เกิน 32 ฟิลด์`,
+          });
+          continue;
+        }
+        if (new Set(group.fields.map((field) => arrayOwner.get(field.id)).filter(Boolean)).size > 1) {
+          add({
+            rule: "compound-index-parallel-arrays",
+            level: "error",
+            collection: label,
+            message: `key ผสม "${group.id}" แตะ array มากกว่า 1 สาย — MongoDB สร้าง compound multikey index แบบ parallel arrays ไม่ได้`,
+          });
+          continue;
+        }
+        seenIndex.add(indexSignature(group.fields.map((field) => ({ path: field.name, direction: 1 }))));
+        indexPrefixes.add(group.fields[0].name);
+      }
+    }
+    for (const index of node.data.indexes ?? []) {
+      let valid = true;
+      if (!index.id.trim()) {
+        add({
+          rule: "index-id-empty",
+          level: "error",
+          collection: label,
+          message: "index ไม่มี id — UI จะแก้หรือลบ index ได้ไม่แน่นอน",
+        });
+        valid = false;
+      } else if (indexIds.has(index.id)) {
+        add({
+          rule: "index-id-duplicate",
+          level: "error",
+          collection: label,
+          message: `index id ${JSON.stringify(index.id)} ซ้ำ — UI อาจแก้หรือลบหลาย index พร้อมกัน`,
+        });
+        valid = false;
+      }
+      indexIds.add(index.id);
+      if (!index.fields.length) {
+        add({
+          rule: "index-empty",
+          level: "error",
+          collection: label,
+          message: "index ไม่มีฟิลด์ — ต้องเลือกอย่างน้อย 1 ฟิลด์",
+        });
+        continue;
+      }
+      if (index.fields.length > 32) {
+        add({
+          rule: "index-too-many-fields",
+          level: "error",
+          collection: label,
+          message: `index มี ${index.fields.length} ฟิลด์ — MongoDB จำกัด compound index ไม่เกิน 32 ฟิลด์`,
+        });
+        valid = false;
+      }
+      const memberIds = new Set<string>();
+      const memberPaths = new Set<string>();
+      const parts: { path: string; direction: IndexDirection; field: Field }[] = [];
+      for (const member of index.fields) {
+        const found = pathById.get(member.field);
+        if (!found) {
+          add({
+            rule: "index-field-not-found",
+            level: "error",
+            collection: label,
+            message: `index อ้าง field id ${JSON.stringify(member.field)} ที่ไม่มีอยู่แล้ว — ลบหรือแก้ index นี้`,
+          });
+          valid = false;
+          continue;
+        }
+        if (memberIds.has(member.field)) {
+          add({
+            rule: "index-duplicate-field",
+            level: "error",
+            collection: label,
+            field: found.path,
+            message: "index เดียวกันมีฟิลด์ซ้ำ — ลำดับ compound index ไม่ถูกต้อง",
+          });
+          valid = false;
+        }
+        memberIds.add(member.field);
+        if (memberPaths.has(found.path)) {
+          add({
+            rule: "index-duplicate-path",
+            level: "error",
+            collection: label,
+            field: found.path,
+            message: "index เดียวกันมี dotted path ซ้ำ — object key จะทับกันและ index ที่ได้ไม่ตรงแบบ",
+          });
+          valid = false;
+        }
+        memberPaths.add(found.path);
+        if (member.direction !== 1 && member.direction !== -1) {
+          add({
+            rule: "index-direction",
+            level: "error",
+            collection: label,
+            field: found.path,
+            message: "ทิศทาง index ต้องเป็น 1 (ขึ้น) หรือ -1 (ลง) เท่านั้น",
+          });
+          valid = false;
+        }
+        parts.push({ ...found, direction: member.direction });
+      }
+      if (!valid) continue;
+      if (new Set(parts.map((part) => arrayOwner.get(part.field.id)).filter(Boolean)).size > 1) {
+        add({
+          rule: "compound-index-parallel-arrays",
+          level: "error",
+          collection: label,
+          message: "compound index แตะ array มากกว่า 1 สาย — MongoDB สร้าง compound multikey index แบบ parallel arrays ไม่ได้",
+        });
+        continue;
+      }
+      const signature = indexSignature(parts);
+      if (seenIndex.has(signature)) {
+        add({
+          rule: "duplicate-index",
+          level: "error",
+          collection: label,
+          message: `มี index รูปแบบซ้ำกัน: ${parts.map((part) => part.path).join(" + ")}`,
+        });
+      } else {
+        seenIndex.add(signature);
+        indexPrefixes.add(parts[0].path);
+      }
+      if (index.unique && (!index.sparse || parts.length > 1)) {
+        for (const part of parts.filter((part) => !part.field.required)) {
+          add({
+            rule: "unique-index-member-not-required",
+            level: "warn",
+            collection: label,
+            field: part.path,
+            message: index.sparse
+              ? "สมาชิกของ unique+sparse compound index ไม่ได้บังคับกรอก — sparse จะเก็บเอกสารเมื่อมีอย่างน้อย 1 ฟิลด์ จึงยังชนค่า null ได้ ควรใช้ required หรือทบทวน index"
+              : "สมาชิกของ unique index ไม่ได้บังคับกรอก — ค่า null อาจชนกัน ควรใช้ required หรือเปิด sparse เมื่อเป็น index ฟิลด์เดียวและความหมายตรงกับข้อมูล",
+          });
+        }
+      }
+    }
+    const referenceFieldIds = new Set(
+      edges
+        .filter((edge) => edge.source === node.id && edge.data?.kind !== "embed")
+        .map((edge) => edge.sourceHandle?.replace(/-s(-[lr])?$/, "")),
+    );
+    for (const [path, field] of fkFields) {
+      if (field.unique || !referenceFieldIds.has(field.id) || indexPrefixes.has(path)) continue;
+      seenIndex.add(indexSignature([{ path, direction: 1 }]));
+      indexPrefixes.add(path);
+    }
+    const generatedIndexes = new Set(seenIndex);
+    generatedIndexes.delete(indexSignature([{ path: "_id", direction: 1 }]));
+    if (generatedIndexes.size + 1 > 64) {
+      add({
+        rule: "too-many-indexes",
+        level: "error",
+        collection: label,
+        message: `คอลเลกชันจะมี index รวม ${generatedIndexes.size + 1} ชุด (รวม _id) — MongoDB จำกัดไม่เกิน 64 ชุด`,
+      });
+    }
+
     // 7) FK ชนิดไม่ตรงกับฟิลด์ปลายทาง — join ไม่เจอเงียบ ๆ
-    for (const f of fkFields) {
+    for (const [path, f] of fkFields) {
       const t = targetField.get(`${node.id}:${f.id}`)!;
       if (t.field.type !== f.type) {
         add({
           rule: "fk-type-mismatch",
           level: "error",
           collection: label,
-          field: f.name,
-          message: `ชนิดไม่ตรงกับปลายทาง ${collectionLabel(t.node)}.${t.field.name} (${f.type} → ${t.field.type}) — query จะหาไม่เจอโดยไม่มี error`,
+          field: path,
+          message: `ชนิดไม่ตรงกับปลายทาง ${collectionLabel(t.node)}.${t.path} (${f.type} → ${t.field.type}) — query จะหาไม่เจอโดยไม่มี error`,
         });
       }
     }
@@ -1412,8 +1796,7 @@ export function demo(): void {
         label: "shops",
         fields: [
           { id: "f26", name: "shopcode", type: "String", required: true, key: true },
-          // tenant scope — index ทุกตัวของ collection นี้ต้องขึ้นต้นด้วยฟิลด์นี้
-          { id: "f33", name: "tenantcode", type: "String", required: true, sessionkey: true },
+          { id: "f33", name: "tenantcode", type: "String", required: true },
           // names shape เพี้ยน (มี isauto เกิน) — ต้องเตือน
           {
             id: "f27",
@@ -1514,7 +1897,7 @@ export function demo(): void {
     "mongosh prefix-dedup skips redundant FK index",
   );
   check(
-    mongosh.includes('// ข้าม index "shopcode" — key ผสมขึ้นต้นด้วยฟิลด์นี้อยู่แล้ว (index prefix)'),
+    mongosh.includes('// ข้าม index "shopcode" — มี index ที่ขึ้นต้นด้วยฟิลด์นี้อยู่แล้ว (index prefix)'),
     "mongosh prefix-dedup note",
   );
   // FK ธรรมดา (ไม่ใช่ prefix ของ key ผสม) ต้องยัง gen index ตามเดิม
@@ -1589,7 +1972,6 @@ export function demo(): void {
 
   // ---- linter ----
   const lint = lintModel(nodes, edges);
-  const rules = new Set(lint.map((i) => i.rule));
   // orders.total เป็น Decimal128 อยู่แล้ว → ต้องไม่ถูกเตือนเรื่องเงิน แต่ถ้าเป็น Number ต้องเตือน
   check(!lint.some((i) => i.rule === "money-not-decimal" && i.field === "total"), "Decimal128 ต้องไม่ถูกเตือนเรื่องเงิน");
   const moneyLint = lintModel(
@@ -1604,7 +1986,6 @@ export function demo(): void {
   );
   // contacts.value เป็น unique + required → ต้องไม่โดน unique-not-required
   check(!lint.some((i) => i.rule === "unique-not-required" && i.field === "contacts.value"), "unique+required ต้องไม่ถูกเตือน");
-  check(rules.has("no-session-key") === false || true, "no-session-key rule ทำงานได้");
   // FK ชนิดไม่ตรง: orders."customer id" (ObjectId) → customers.name (String)
   check(lint.some((i) => i.rule === "fk-type-mismatch"), "FK ที่ชนิดไม่ตรงปลายทางต้องถูกจับ");
 
@@ -1614,16 +1995,10 @@ export function demo(): void {
     "unique ของ field ซ้อนต้อง gen เป็น dotted-path index",
   );
 
-  // session key (🌐) ต้องเป็นหัวของ FK index — ระบบหลายผู้เช่ากรอง tenant ก่อนเสมอ
-  const shopsBlock = mongosh.split("db.createCollection").find((b) => b.includes('"shops"')) ?? "";
-  check(
-    !shopsBlock.includes('createIndex({ "shopcode": 1 })') || shopsBlock.includes('"tenantcode": 1'),
-    "session key ต้องนำหน้า index ของ collection ที่มี tenant scope",
-  );
-  // collection ที่ไม่มี session key ต้อง gen index เดี่ยวเหมือนเดิม (ไม่ regress)
+  // relation ต้อง gen index เดี่ยวตาม field ต้นทาง
   check(
     mongosh.includes('db.orders.createIndex({ "customer id": 1 });'),
-    "collection ที่ไม่มี session key ยัง gen FK index เดี่ยวตามเดิม",
+    "relation ต้อง gen FK index เดี่ยว",
   );
 
   // names shape check — {code, name} เท่านั้น

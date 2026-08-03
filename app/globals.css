@@ -23,6 +23,13 @@
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-noto-thai);
+
+  /* บรรทัดสูงของสเกล text-* — ค่า default ของ tailwind (1.333 ที่ text-xs) แคบเกินสำหรับอักษรไทย
+     ที่มีสระบน+วรรณยุกต์ซ้อนสองชั้น (ญั้ ปิ๋ ฏุ๊) กล่องบรรทัดเล็กกว่ากล่องหมึกจริง หัว/หางโดนตัด
+     ยกเป็น ≥1.5 ทุกขั้น — text-[10px]/text-[11px] ที่ไม่ระบุ line-height เองก็สืบทอดอัตราส่วนนี้ */
+  --text-xs--line-height: 1.55;
+  --text-sm--line-height: 1.55;
+  --text-base--line-height: 1.6;
 }
 
 /* โหมดสว่าง — UI ทั้งแอปเขียนด้วย utility ของ tailwind (bg-slate-800, text-slate-300, …) 122 จุด
@@ -61,6 +68,33 @@
   --color-blue-950: #eff6ff;
   --color-sky-950: #e0f2fe;
   --color-sky-900: #bae6fd;
+
+  /* สีเน้น (sky/amber/red/yellow/emerald/blue) ที่ UI ใช้เป็น "สีตัวอักษร" ยังเป็นโทนสว่างของธีมมืด
+     พอพื้นกลายเป็นขาวจึงเหลือ 1.2–1.5:1 (มองแทบไม่เห็น) — พลิกให้เข้มเหมือนที่ทำกับสเกล slate
+     คู่ -950/-900 ที่ใช้เป็น "พื้นแถบเตือน" ต้องพลิกเป็นโทนอ่อนคู่กัน ไม่งั้นได้เข้มบนเข้ม
+     ห้ามพลิก 500/600 (bg-sky-600 / bg-red-600 เป็นพื้นปุ่มตัวอักษรขาว) */
+  --color-sky-400: #0284c7;
+  --color-sky-300: #0369a1;
+  --color-sky-200: #075985;
+  --color-blue-300: #1d4ed8;
+  --color-amber-400: #b45309;
+  --color-amber-300: #b45309;
+  --color-amber-200: #92400e;
+  --color-amber-900: #fcd34d;
+  --color-amber-950: #fffbeb;
+  --color-red-400: #dc2626;
+  --color-red-300: #b91c1c;
+  --color-red-900: #fecaca;
+  --color-red-950: #fef2f2;
+  --color-yellow-300: #854d0e;
+  --color-yellow-900: #fde68a;
+  --color-yellow-950: #fefce8;
+  --color-emerald-300: #047857;
+  --color-emerald-900: #a7f3d0;
+  --color-emerald-950: #ecfdf5;
+  --color-violet-200: #6d28d9;
+  --color-violet-300: #6d28d9;
+  --color-violet-950: #f5f3ff;
 }
 
 html,
@@ -107,6 +141,7 @@ body {
     border: 1px solid var(--line);
     background: var(--surface-1);
     color: #cbd5e1;
+    cursor: pointer;
     transition: background-color 0.15s, border-color 0.15s, color 0.15s, transform 0.1s,
       box-shadow 0.15s;
   }
@@ -120,44 +155,63 @@ body {
   }
   .mm-btn:disabled {
     opacity: 0.3;
-    cursor: default;
+    cursor: not-allowed;
   }
+  /* ตัวอักษรขาว 13px บนไล่เฉด — ค่าเดิม (#0ea5e9/#10b981) ได้แค่ 2.5–3.8:1 ทั้งสองธีม
+     เข้มลงหนึ่งขั้นให้ทั้งปุ่ม ≥4.5:1 โดยยังอยู่ hue เดิม */
   .mm-btn-primary {
-    background: linear-gradient(180deg, #0ea5e9, #0284c7);
+    background: linear-gradient(180deg, #0369a1, #075985);
     border-color: rgba(56, 189, 248, 0.5);
     color: #fff;
     font-weight: 500;
     box-shadow: var(--elev-1), inset 0 1px 0 rgba(255, 255, 255, 0.18);
   }
   .mm-btn-primary:hover:not(:disabled) {
-    background: linear-gradient(180deg, #38bdf8, #0ea5e9);
+    background: linear-gradient(180deg, #0284c7, #0369a1);
     border-color: rgba(56, 189, 248, 0.7);
     color: #fff;
   }
   .mm-btn-accent {
-    background: linear-gradient(180deg, #10b981, #059669);
+    background: linear-gradient(180deg, #047857, #065f46);
     border-color: rgba(16, 185, 129, 0.5);
     color: #fff;
     font-weight: 500;
     box-shadow: var(--elev-1), inset 0 1px 0 rgba(255, 255, 255, 0.18);
   }
   .mm-btn-accent:hover:not(:disabled) {
-    background: linear-gradient(180deg, #34d399, #10b981);
+    background: linear-gradient(180deg, #059669, #047857);
     border-color: rgba(16, 185, 129, 0.7);
     color: #fff;
+  }
+  /* ปุ่มไอคอนในการ์ด (ธง field / เรียงลำดับ key ผสม) — เดิมเป็น glyph เปล่า ๆ ขนาด 6.6×16px
+     ไม่มี hover ไม่มี active ไม่มี cursor: ขยาย hitbox เป็น 20×20 ด้วย padding แล้วดึงเลย์เอาต์
+     กลับด้วย margin ลบ (ไอคอนขนาดเดิม แถวไม่สูงขึ้น ความกว้างเพิ่มน้อยที่สุด) */
+  .mm-ico {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    /* 24×24 = เกณฑ์ target size ของ WCAG 2.5.8 (AA) — ปุ่มลบ/ทำซ้ำบนหัวการ์ดเคยเหลือ 9.8px */
+    min-width: 24px;
+    min-height: 24px;
+    margin: -5px -2px;
+    border-radius: 0.375rem;
+    cursor: pointer;
+    transition: background-color 0.12s, transform 0.08s, color 0.12s;
+  }
+  .mm-ico:hover:not(:disabled) {
+    background: var(--surface-2);
+  }
+  .mm-ico:active:not(:disabled) {
+    transform: scale(0.88);
+  }
+  .mm-ico:disabled {
+    cursor: not-allowed;
   }
   .mm-btn-on {
     background: var(--accent-soft);
     border-color: rgba(56, 189, 248, 0.45);
     color: #7dd3fc;
-  }
-
-  /* toolbar เลื่อนได้แต่ไม่ต้องโชว์ราง — ปุ่มพอดีจอในกรณีปกติอยู่แล้ว */
-  .mm-toolbar {
-    scrollbar-width: none;
-  }
-  .mm-toolbar::-webkit-scrollbar {
-    display: none;
   }
 
   /* ── input ── */
@@ -211,7 +265,7 @@ body {
     background: rgba(8, 13, 24, 0.88);
     backdrop-filter: blur(6px);
     padding: 0.125rem 0.5rem;
-    font-size: 10.5px;
+    font-size: 11px;
     line-height: 1.25rem;
     color: #cbd5e1;
     box-shadow: var(--elev-1);
@@ -219,13 +273,19 @@ body {
   }
 
   /* ── collection card ── */
+  /* ลำดับชั้นเงา: การ์ดบน canvas = elev-1, แผงลอย/โมดัล = elev-2, ที่ยกขึ้นจริง (hover/เลือก/ลาก) = elev-3
+     เดิมการ์ดกับแผงใช้ elev-2 เท่ากันหมด เงาจึงไม่ได้บอกความลึกอะไรเลย */
   .mm-card {
     border-radius: 0.875rem;
     background: linear-gradient(180deg, rgba(30, 41, 59, 0.96), rgba(15, 23, 42, 0.96));
-    box-shadow: var(--elev-2);
+    box-shadow: var(--elev-1);
     transition: box-shadow 0.2s, border-color 0.2s;
   }
   .mm-card:hover {
+    box-shadow: var(--elev-2);
+  }
+  /* ลากการ์ด = ยกขึ้นจริง (เดิมเงาเท่าเดิมทุกจังหวะ แยกไม่ออกว่าใบไหนอยู่บน) */
+  .react-flow__node.dragging .mm-card {
     box-shadow: var(--elev-3);
   }
   .mm-card-selected {
@@ -243,8 +303,29 @@ body {
   outline: 2px solid rgba(56, 189, 248, 0.7);
   outline-offset: 2px;
 }
+/* ธีมสว่าง: ฟ้าอ่อนตัวเดียวกันบนพื้นเกือบขาวเหลือ 1.65:1 (เกณฑ์ 1.4.11 = 3:1) — ใช้ฟ้าเข้มแทน 5.7:1 */
+[data-theme="light"] :focus-visible {
+  outline-color: #0369a1;
+}
 
-/* scrollbar บาง — 14px แบบ default ทำให้ dark UI ดูเทอะทะ */
+/* กดได้ต้องเห็นว่ากดได้ — ปุ่มเกือบทั้งแอปเป็น <button> เปล่าที่ได้ cursor:default มาจาก UA
+   (ขณะที่พื้นว่างของ canvas กลับเป็น pointer ทั้งที่คลิกแล้วแค่ยกเลิกการเลือก = สลับกันหมด) */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+/* ต้องมี .react-flow นำหน้า — stylesheet ของ react flow โหลดทีหลัง specificity เท่ากันจะชนะ */
+.react-flow .react-flow__pane {
+  cursor: default;
+}
+
+/* scrollbar บาง — 14px แบบ default ทำให้ dark UI ดูเทอะทะ
+   กฎ * นี้ต้องอยู่ "นอก layer" คู่กับ .mm-toolbar ข้างล่าง เพราะกฎนอก layer ชนะกฎใน layer เสมอ
+   โดยไม่สน specificity — ตอน .mm-toolbar อยู่ใน @layer components มันเลยแพ้ * ตัวนี้ แล้วราง
+   scroll ของ toolbar โผล่มาทั้งที่สั่งซ่อนไว้ (ลอง @layer base แล้ว compiler ไม่คงชั้นให้) */
 * {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
@@ -262,6 +343,45 @@ body {
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* toolbar เลื่อนได้แต่ไม่ต้องโชว์ราง — อยู่นอก layer เหมือนกฎ * ข้างบน specificity (0,1,0) จึงชนะ */
+.mm-toolbar {
+  scrollbar-width: none;
+}
+.mm-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* โฟกัสด้วยคีย์บอร์ดบน canvas — node/edge โฟกัสได้อยู่แล้วแต่ react flow ตั้ง outline-style:none
+   ไว้ ทำให้ไม่มีสัญญาณใด ๆ ว่าตอนนี้อยู่ตรงไหน (ใช้เงา+วงแหวนแทน outline ที่ถูกปิด) */
+.react-flow .react-flow__node:focus-visible {
+  outline: none;
+}
+.react-flow .react-flow__node:focus-visible .mm-card {
+  box-shadow: var(--elev-3), 0 0 0 3px rgba(56, 189, 248, 0.85);
+}
+.react-flow .react-flow__edge:focus-visible {
+  outline: none;
+}
+.react-flow .react-flow__edge:focus-visible .react-flow__edge-path {
+  stroke: #38bdf8;
+  stroke-width: 3;
+}
+
+/* เคารพการตั้งค่า "ลดการเคลื่อนไหว" ของระบบ — เส้น relation เป็น marching ants วิ่งตลอดเวลา
+   ปิดไม่ได้เลย (ความหมายของเส้นอยู่ที่ทิศลูกศร/เส้นประ ไม่ได้อยู่ที่การวิ่ง จึงตัดได้ปลอดภัย) */
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__edge-path {
+    animation: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* React Flow tweaks
@@ -286,6 +406,21 @@ body {
   stroke: #ef4444 !important;
 }
 
+/* เส้นต้องคมเท่าเดิมตอนซูมออก — SVG ปกติย่อ stroke จน relation จางหายก่อนตัวการ์ด */
+.react-flow .react-flow__edge-path {
+  vector-effect: non-scaling-stroke;
+}
+
+#mm-canvas .react-flow {
+  background: radial-gradient(900px 420px at 50% 8%, rgba(56, 189, 248, 0.045), transparent 72%);
+}
+
+.react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  box-shadow: var(--elev-2);
+}
 .react-flow__controls button {
   background: var(--surface-2);
   border: none;
@@ -298,10 +433,24 @@ body {
   color: #f8fafc;
 }
 .react-flow__minimap {
+  width: 150px !important;
+  height: 100px !important;
   border: 1px solid var(--line);
   border-radius: 0.75rem;
   box-shadow: var(--elev-2);
   overflow: hidden;
+  opacity: 0.68;
+  transition: opacity 0.15s, box-shadow 0.15s;
+}
+.react-flow__minimap:hover {
+  opacity: 1;
+  box-shadow: var(--elev-3);
+}
+@media (max-width: 900px) {
+  /* React Flow ใส่ทั้ง class panel และ minimap บน element เดียวกัน — บังคับชนะกฎ package ที่โหลดทีหลัง */
+  #mm-canvas .react-flow__minimap {
+    display: none !important;
+  }
 }
 
 /* wiki viewer — note เปลี่ยนแล้ว fade-in */
@@ -317,6 +466,24 @@ body {
 }
 .wiki-note-enter {
   animation: wiki-fade-in 0.25s ease-out;
+}
+
+/* toast/โมดัล — โผล่มาแบบมีจังหวะ ไม่ใช่กระพริบมาเฉย ๆ */
+@keyframes mm-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.mm-toast {
+  animation: mm-pop-in 0.15s ease-out;
+}
+.mm-modal {
+  animation: mm-pop-in 0.15s ease-out;
 }
 
 /* เส้นปรับความกว้างการ์ด (NodeResizeControl line ขวา) — ค่า default กว้าง 1px มองไม่เห็น/จับยาก
@@ -345,6 +512,17 @@ body {
 [data-theme="light"] .mm-card-head {
   background: linear-gradient(180deg, #2563eb, #1d4ed8);
 }
+/* หัวการ์ดยังเป็นน้ำเงินเข้มในโหมดสว่าง แต่ text-slate-100 ถูกรีแมปเป็น #0f172a → เข้มบนเข้ม (2.67:1)
+   บังคับขาวทั้งแถบ (7.0:1) — บั๊กเดียวกับที่เคยเจอกับ .mm-btn-primary ข้างล่าง */
+[data-theme="light"] .mm-card-head,
+[data-theme="light"] .mm-card-head span,
+[data-theme="light"] .mm-card-head input,
+[data-theme="light"] .mm-card-head button {
+  color: #fff;
+}
+[data-theme="light"] .mm-card-head input {
+  background: rgba(0, 0, 0, 0.35);
+}
 [data-theme="light"] .mm-edge-label {
   background: rgba(255, 255, 255, 0.92);
   border-color: rgba(15, 23, 42, 0.12);
@@ -369,19 +547,19 @@ body {
    specificity เท่ากันแต่ตั้ง background:#fff จึงชนะกฎ .mm-btn-primary ฝั่ง dark
    → เคยได้ตัวหนังสือขาวบนพื้นขาว อ่านไม่ออกทั้งปุ่ม (สร้างโปรเจกต์/เพิ่มคอลเลกชัน/สร้างโค้ด) */
 [data-theme="light"] .mm-btn-primary {
-  background: linear-gradient(180deg, #0ea5e9, #0284c7);
+  background: linear-gradient(180deg, #0369a1, #075985);
   color: #fff;
 }
 [data-theme="light"] .mm-btn-primary:hover:not(:disabled) {
-  background: linear-gradient(180deg, #38bdf8, #0ea5e9);
+  background: linear-gradient(180deg, #0284c7, #0369a1);
   color: #fff;
 }
 [data-theme="light"] .mm-btn-accent {
-  background: linear-gradient(180deg, #10b981, #059669);
+  background: linear-gradient(180deg, #047857, #065f46);
   color: #fff;
 }
 [data-theme="light"] .mm-btn-accent:hover:not(:disabled) {
-  background: linear-gradient(180deg, #34d399, #10b981);
+  background: linear-gradient(180deg, #059669, #047857);
   color: #fff;
 }
 [data-theme="light"] .mm-btn-on {
@@ -411,4 +589,7 @@ body[data-theme="light"] {
 }
 [data-theme="light"] .react-flow .react-flow__handle {
   border-color: #ffffff;
+}
+[data-theme="light"] .react-flow__controls button {
+  color: #334155;
 }

@@ -20,7 +20,7 @@ export async function GET(_req: Request, ctx: Ctx) {
   const { name } = await ctx.params;
   const p = await getProject(decodeURIComponent(name));
   if (!p) return Response.json({ error: "ไม่พบ project" }, { status: 404 });
-  // conditional: rev เดิม = ไม่ต้องส่งข้อมูล (UI poll ทุก 3 วิ) — ?rev ว่าง/ไม่ใช่ตัวเลข = ตอบปกติ
+  // conditional: rev เดิม = ไม่ต้องส่งข้อมูล (UI poll สำรองทุก 1 วิ) — ?rev ว่าง/ไม่ใช่ตัวเลข = ตอบปกติ
   const rawRev = new URL(_req.url).searchParams.get("rev");
   if (rawRev !== null && rawRev !== "" && Number(rawRev) === p.rev) {
     return new Response(null, { status: 204 });
