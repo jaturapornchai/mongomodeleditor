@@ -70,14 +70,14 @@
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/workflow-login.png"><img src="docs/screenshots/workflow-login.png" alt="Workflow Login แสดงขั้นตอน เงื่อนไข และผลลัพธ์ใน MongoModel" /></a>
-      <br /><strong>5. Workflow Login พร้อมให้ vibe coding อ่าน</strong>
-      <br />เริ่มจากแม่แบบ Login แล้วปรับเป้าหมาย, trigger, acceptance criteria และเส้นทางสำเร็จ/ล้มเหลว พร้อม lint ก่อนส่งต่อให้ AI
+      <a href="docs/screenshots/workflow-login.png"><img src="docs/screenshots/workflow-login.png" alt="Workflow Login แสดงภาพรวมผัง คำแนะนำ และผลตรวจใน MongoModel" /></a>
+      <br /><strong>5. Workflow Login ที่อ่านตามได้ทันที</strong>
+      <br />แม่แบบพร้อมทางสำเร็จ–ล้มเหลว มี autosave, ย้อน/ทำซ้ำ และตัวตรวจผังพร้อมคำแนะนำมือใหม่ในหน้าจอเดียว
     </td>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/workflow-step-details.png"><img src="docs/screenshots/workflow-step-details.png" alt="รายละเอียดขั้นตอน Workflow พร้อม API และกฎธุรกิจ" /></a>
-      <br /><strong>6. รายละเอียดแต่ละขั้นตอนแบบ structured</strong>
-      <br />ระบุผู้ทำ, Method, API path, input/output, CRUD ที่แตะ collection, business rules และ errors เพื่อให้ AI เขียนโค้ดโดยไม่เดา
+      <a href="docs/screenshots/workflow-step-details.png"><img src="docs/screenshots/workflow-step-details.png" alt="รายละเอียดขั้นตอน Workflow ที่ผูก CRUD กับ collection และหลาย field" /></a>
+      <br /><strong>6. ผูก CRUD กับ Schema โดยตรง</strong>
+      <br />เลือก operation, collection และหลาย field แล้วเปิดกลับไปยัง Schema จุดเดิมได้ทันทีด้วย stable ID
     </td>
   </tr>
 </table>
@@ -102,7 +102,7 @@ npm run dev
 3. ทำเครื่องหมาย business key หรือรวมหลาย field เป็น key ผสม
 4. ลาก relation จาก field ฝั่งลูกไปยัง business key ฝั่งแม่
 5. เปิด **Workflow** เพื่อวาดขั้นตอนธุรกิจเอง หรือเริ่มจากแม่แบบ **Login**
-6. กด **ตรวจ** แล้วเลือก **สร้างโค้ด**, **Wiki** หรือคัดลอก **AI Context**
+6. กด **ตรวจ** แล้วเลือก **สร้างโค้ด**, **Wiki** หรือ **ส่งให้ AI**
 
 ### รันด้วย Docker Desktop
 
@@ -141,8 +141,9 @@ Workflow ใช้อธิบายว่า feature ทำงานอย่�
 1. เปิด project แล้วกด **Workflow**
 2. สร้างผังว่างหรือเลือก **Login template**
 3. เชื่อมการ์ดและระบุ `Create / Read / Update / Delete` ที่แต่ละขั้นตอนใช้
-4. กด **ตรวจ** เพื่อหา step ที่ไปไม่ถึง, decision ที่ไม่มีทางออก หรือ reference ที่หลุดจาก schema
-5. กด **AI Context** เพื่อคัดลอก Markdown + Mermaid หรือให้ MCP เรียก `get_project_context` / `get_workflow`
+4. ใช้ **↶ / ↷** หรือ `Ctrl+Z / Ctrl+Y` เมื่อโฟกัสอยู่บนผังเพื่อย้อนและทำซ้ำ แล้วกด **เปิดใน Schema** เพื่อไปยัง collection/field ที่ขั้นตอนนั้นอ้างถึง
+5. กด **ตรวจ** เพื่อหา step ที่ไปไม่ถึง, decision ที่ไม่มีทางออก หรือ reference ที่หลุดจาก schema
+6. กด **ส่งให้ AI** เพื่อคัดลอก Markdown + Mermaid หรือให้ MCP เรียก `get_project_context` / `get_workflow`
 
 Workflow ใช้ collection และ field ID เดียวกับ model จึง rename ได้โดย reference ไม่หลุด, autosave และ sync ด้วย `rev` ชุดเดียวกัน ไม่ต้องตั้งค่าเพิ่มนอกจากเปิด project เดิม ข้อจำกัดคือยังไม่ใช่ workflow runtime: แอปไม่เรียก API หรือ execute business process ให้เอง
 

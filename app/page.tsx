@@ -42,7 +42,7 @@ import "@xyflow/react/dist/style.css";
 import ELK from "elkjs/lib/elk.bundled.js";
 import WikiViewer from "./wiki/[project]/WikiViewer";
 import type { WikiData } from "./wiki-data";
-import WorkflowEditor from "./workflow-editor";
+import WorkflowEditor, { type SchemaFocusTarget } from "./workflow-editor";
 import {
   compositeRenderGroups,
   fieldByHandle,
@@ -1859,6 +1859,7 @@ function Designer({
   theme,
   onToggleTheme,
   onShowWorkflow,
+  initialFocus,
 }: {
   project: string; // ชื่อ project บน server — source of truth
   offline: boolean; // true = โหมดออฟไลน์ (localStorage ล้วน ไม่มีระบบ project)
@@ -1868,6 +1869,7 @@ function Designer({
   theme: Theme; // ธีมปัจจุบัน — ส่งต่อให้ react flow ด้วย (colorMode)
   onToggleTheme: () => void;
   onShowWorkflow?: () => void;
+  initialFocus?: SchemaFocusTarget;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CollectionNode>([]);
   const [edges, setEdges, applyEdgeChanges] = useEdgesState<RelEdge>([]);
@@ -1928,6 +1930,7 @@ function Designer({
   const diagramsMap = useRef<Record<string, { nodes: CollectionNode[]; edges: RelEdge[] }>>({});
   // เวอร์ชัน reactive ของ diagram ทุกแท็บ (ตั้งตอนโหลด/refresh) — ใช้ตอน render (กฎ react-hooks ห้ามอ่าน ref ระหว่าง render)
   const [allDiagrams, setAllDiagrams] = useState<Record<string, { nodes: CollectionNode[]; edges: RelEdge[] }>>({});
+  const initialFocusDone = useRef(false);
   const knownRev = useRef<number | null>(null); // rev ล่าสุดที่ UI รู้ — ต่างจาก server = มีคนอื่นแก้
   const lastPayload = useRef(""); // payload ล่าสุดที่ server มี — กัน autosave ยิง PUT ซ้ำตอน refresh/โหลด (ไม่งั้น rev ไถลและของที่ AI ลบเด้งกลับ)
   const serverOn = useRef(false); // bootstrap ต่อ server ได้ไหม — ไม่ได้ = โหมด offline (localStorage ล้วน)
@@ -2800,6 +2803,32 @@ function Designer({
       fitView({ nodes: [{ id: nid }], duration: 300, maxZoom: 1.2 });
     }, 350);
   };
+
+  useEffect(() => {
+    if (!initialFocus || initialFocusDone.current) return;
+    const diagram = initialFocus.diagram === cur ? { nodes } : allDiagrams[initialFocus.diagram];
+    if (!diagram?.nodes.some((node) => node.id === initialFocus.collection)) return;
+    initialFocusDone.current = true;
+    setTimeout(() => {
+      if (initialFocus.diagram === cur) focusNode(initialFocus.collection);
+      else focusCrossNode(initialFocus.diagram, initialFocus.collection);
+    }, initialFocus.diagram === cur ? 360 : 0);
+    if (initialFocus.field) {
+      const fieldId = initialFocus.field;
+      const collectionId = initialFocus.collection;
+      setTimeout(() => {
+        const card = Array.from(document.querySelectorAll<HTMLElement>(".react-flow__node[data-id]"))
+          .find((element) => element.dataset.id === collectionId);
+        const input = Array.from(card?.querySelectorAll<HTMLInputElement>("input[data-fid]") ?? [])
+          .find((element) => element.dataset.fid === fieldId);
+        input?.scrollIntoView({ block: "center", inline: "nearest" });
+        input?.focus();
+        input?.select();
+      }, initialFocus.diagram === cur ? 700 : 800);
+    }
+    // ทำครั้งเดียวหลัง bootstrap; focusNode/focusCrossNode เปลี่ยน identity ทุก render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allDiagrams, cur, initialFocus, nodes]);
 
   // ตัวบอก toolbar ล้นจอ — จอแคบ (โน้ตบุ๊ก 1366/1280px) ปุ่มขวาสุดถูกซ่อนหลัง scroll เงียบๆ
   // ไม่มีสัญญาณอะไรเลย ผู้ใช้ไม่รู้ว่ามีปุ่มนำเข้า/ส่งออก/สำรองอยู่ — โชว์ » ไล่สีเมื่อยังมีของซ่อนขวา
@@ -4549,6 +4578,7 @@ function App() {
   const [offline, setOffline] = useState(false);
   const [wiki, setWiki] = useState<string | null>(null); // โปรเจกต์ที่เปิด wiki อยู่
   const [workspaceView, setWorkspaceView] = useState<"schema" | "workflow">("schema");
+  const [schemaFocus, setSchemaFocus] = useState<SchemaFocusTarget | null>(null);
 
   // deep link: /?project=<ชื่อ> — bookmark/refresh แล้วกลับเข้าโปรเจกต์เดิมได้เลย
   // (client component — อ่าน URL ได้หลัง mount เท่านั้น; ชื่อไม่ถูกต้อง bootstrap จะพากลับหน้าเลือกเอง)
@@ -4577,6 +4607,7 @@ function App() {
     const onPop = () => {
       setProject(new URLSearchParams(window.location.search).get("project"));
       setWorkspaceView("schema");
+      setSchemaFocus(null);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -4588,6 +4619,7 @@ function App() {
   const openProject = (name: string) => {
     setProject(name);
     setWorkspaceView("schema");
+    setSchemaFocus(null);
     if (wiki !== null && wiki !== name) setWiki(null); // wiki คนละโปรเจกต์ → ปิดกันสับสน
   };
   return (
@@ -4613,8 +4645,16 @@ function App() {
             <WorkflowEditor
               project={project}
               theme={theme}
-              onBack={() => setWorkspaceView("schema")}
+              onBack={() => {
+                setSchemaFocus(null);
+                setWorkspaceView("schema");
+              }}
+              onOpenSchema={(target) => {
+                setSchemaFocus(target);
+                setWorkspaceView("schema");
+              }}
               onExit={() => {
+                setSchemaFocus(null);
                 setWorkspaceView("schema");
                 setProject(null);
               }}
@@ -4632,8 +4672,10 @@ function App() {
               wikiOpen={wiki === project}
               theme={theme}
               onToggleTheme={toggleTheme}
+              initialFocus={schemaFocus ?? undefined}
               onShowWorkflow={() => {
                 setWiki(null);
+                setSchemaFocus(null);
                 setWorkspaceView("workflow");
               }}
             />

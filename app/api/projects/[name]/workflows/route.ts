@@ -20,7 +20,13 @@ const projectData = (p: StoredProject, workflows: Record<string, Workflow>) => (
 });
 
 const collectionOptions = (p: StoredProject) => {
-  const out: { id: string; label: string; fields: { id: string; path: string; type: string }[] }[] = [];
+  const out: {
+    id: string;
+    label: string;
+    diagram: string;
+    diagramName: string;
+    fields: { id: string; path: string; type: string }[];
+  }[] = [];
   const walk = (fields: RawField[], parent = ""): { id: string; path: string; type: string }[] =>
     fields.flatMap((field) => {
       if (typeof field.id !== "string" || typeof field.name !== "string") return [];
@@ -30,14 +36,19 @@ const collectionOptions = (p: StoredProject) => {
         ...walk(Array.isArray(field.children) ? field.children : [], path),
       ];
     });
-  for (const diagram of Object.values(p.diagrams))
+  for (const tab of p.tabs) {
+    const diagram = p.diagrams[tab.id];
+    if (!diagram) continue;
     for (const node of diagram.nodes as RawNode[])
       if (typeof node.id === "string" && typeof node.data?.label === "string")
         out.push({
           id: node.id,
           label: node.data.label,
+          diagram: tab.id,
+          diagramName: tab.name,
           fields: walk(Array.isArray(node.data.fields) ? node.data.fields : []),
         });
+  }
   return out;
 };
 
