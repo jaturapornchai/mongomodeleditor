@@ -3,14 +3,14 @@
 <p align="center">
   <strong>Visual MongoDB Data Model Editor สำหรับทีมที่คิด ออกแบบ และอธิบายระบบเป็นภาษาไทย</strong>
   <br />
-  วาง collection บน canvas · เชื่อม relation ระดับ field · ตรวจ model · ส่งออกโค้ด · เปิดให้ AI แก้ผ่าน MCP
+  วาง collection บน canvas · สร้าง workflow ธุรกิจ · ตรวจ model · ส่งออกโค้ด · เปิดให้ AI อ่านต่อผ่าน MCP
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Next.js-16-000000?logo=next.js" alt="Next.js 16" />
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=0B1F33" alt="React 19" />
   <img src="https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white" alt="TypeScript strict" />
-  <img src="https://img.shields.io/badge/MCP-25_tools-7C3AED" alt="MCP 25 tools" />
+  <img src="https://img.shields.io/badge/MCP-31_tools-7C3AED" alt="MCP 31 tools" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22C55E" alt="MIT License" /></a>
 </p>
 
@@ -34,8 +34,9 @@
 | **เชื่อมความสัมพันธ์อย่างชัดเจน** | relation แบบ field → field, reference/embed, `1:1` / `1:N` / `N:N`, เส้นข้าม diagram และเส้นสรุป key ผสม |
 | **ดูแลผังขนาดใหญ่** | หลาย project, หลาย diagram, ค้นหา, จัดผังอัตโนมัติ, compact LOD ตอนซูมออก และจำ viewport แยกแต่ละ diagram |
 | **ตรวจคุณภาพก่อนนำไปใช้** | lint ทั้ง workspace, ตรวจชนิด FK, business key, index, คำอธิบายภาษาไทย และกฎสำหรับฟิลด์ตัวเลขการเงิน |
+| **อธิบายขั้นตอนธุรกิจให้ AI** | วาด workflow แบบ node/edge, ผูก API และ CRUD กับ collection/field ด้วย stable ID, lint แล้วคัดลอก Markdown + Mermaid ให้ vibe coding อ่านได้ทันที |
 | **ส่งออกงานต่อได้ทันที** | สร้าง mongosh, Go, Mongoose, TypeScript, Markdown, Wiki, sample JSON และไฟล์ diagram JSON |
-| **ทำงานร่วมกับ AI** | MCP 25 tools ผ่าน HTTP หรือ stdio สำหรับอ่าน แก้ ตรวจ และสร้างโค้ดจาก model เดียวกับหน้าเว็บ |
+| **ทำงานร่วมกับ AI** | MCP 31 tools ผ่าน HTTP หรือ stdio สำหรับอ่าน แก้ ตรวจ สร้างโค้ด และทำ CRUD workflow จากข้อมูลเดียวกับหน้าเว็บ |
 | **ทำงานหลายหน้าต่างได้** | autosave, sync ระหว่างแท็บ/เบราว์เซอร์, optimistic concurrency และ snapshot ย้อนกลับ 20 รุ่นล่าสุด |
 
 ## หน้าจอจริง
@@ -67,6 +68,18 @@
       <br />เปิดเอกสารข้าง canvas โดยไม่เสีย state เดิม และสำรวจ collection, type กับ relation ข้ามทุก diagram ผ่านกราฟแบบ interactive
     </td>
   </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/workflow-login.png"><img src="docs/screenshots/workflow-login.png" alt="Workflow Login แสดงขั้นตอน เงื่อนไข และผลลัพธ์ใน MongoModel" /></a>
+      <br /><strong>5. Workflow Login พร้อมให้ vibe coding อ่าน</strong>
+      <br />เริ่มจากแม่แบบ Login แล้วปรับเป้าหมาย, trigger, acceptance criteria และเส้นทางสำเร็จ/ล้มเหลว พร้อม lint ก่อนส่งต่อให้ AI
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/workflow-step-details.png"><img src="docs/screenshots/workflow-step-details.png" alt="รายละเอียดขั้นตอน Workflow พร้อม API และกฎธุรกิจ" /></a>
+      <br /><strong>6. รายละเอียดแต่ละขั้นตอนแบบ structured</strong>
+      <br />ระบุผู้ทำ, Method, API path, input/output, CRUD ที่แตะ collection, business rules และ errors เพื่อให้ AI เขียนโค้ดโดยไม่เดา
+    </td>
+  </tr>
 </table>
 
 ## เริ่มใช้งานภายใน 2 นาที
@@ -88,7 +101,8 @@ npm run dev
 2. เพิ่ม collection กับ field พร้อมคำอธิบายภาษาไทย
 3. ทำเครื่องหมาย business key หรือรวมหลาย field เป็น key ผสม
 4. ลาก relation จาก field ฝั่งลูกไปยัง business key ฝั่งแม่
-5. กด **ตรวจ** แล้วเลือก **สร้างโค้ด** หรือ **Wiki**
+5. เปิด **Workflow** เพื่อวาดขั้นตอนธุรกิจเอง หรือเริ่มจากแม่แบบ **Login**
+6. กด **ตรวจ** แล้วเลือก **สร้างโค้ด**, **Wiki** หรือคัดลอก **AI Context**
 
 ### รันด้วย Docker Desktop
 
@@ -117,6 +131,20 @@ field ที่อยู่ใน `keygroup` เดียวกันจะแ�
 ### คำอธิบายไทยเป็นส่วนหนึ่งของ schema
 
 collection และ field ที่สร้างหรือแก้ต้องมีคำอธิบายภาษาไทย ทั้ง UI และ MCP ตรวจเงื่อนไขเดียวกัน ทำให้ data dictionary และ Wiki ที่สร้างออกมาอ่านต่อได้ทันที
+
+## Workflow สำหรับ vibe coding
+
+Workflow ใช้อธิบายว่า feature ทำงานอย่างไร โดยเก็บขั้นตอน, เงื่อนไข, API, input/output, business rule, error และ CRUD ที่แตะ collection/field จริงใน model ตัวอย่างแม่แบบ **Login** ครอบคลุมรับ credentials → ตรวจผู้ใช้ → ตรวจรหัสผ่าน → สร้าง session → ตอบผลสำเร็จ/ปฏิเสธ
+
+วิธีใช้:
+
+1. เปิด project แล้วกด **Workflow**
+2. สร้างผังว่างหรือเลือก **Login template**
+3. เชื่อมการ์ดและระบุ `Create / Read / Update / Delete` ที่แต่ละขั้นตอนใช้
+4. กด **ตรวจ** เพื่อหา step ที่ไปไม่ถึง, decision ที่ไม่มีทางออก หรือ reference ที่หลุดจาก schema
+5. กด **AI Context** เพื่อคัดลอก Markdown + Mermaid หรือให้ MCP เรียก `get_project_context` / `get_workflow`
+
+Workflow ใช้ collection และ field ID เดียวกับ model จึง rename ได้โดย reference ไม่หลุด, autosave และ sync ด้วย `rev` ชุดเดียวกัน ไม่ต้องตั้งค่าเพิ่มนอกจากเปิด project เดิม ข้อจำกัดคือยังไม่ใช่ workflow runtime: แอปไม่เรียก API หรือ execute business process ให้เอง
 
 ## รูปแบบที่ส่งออกได้
 
@@ -173,6 +201,7 @@ MCP tools ครอบคลุม:
 - project และ revision: สร้าง เปลี่ยนชื่อ ลบ ดู snapshot และ restore
 - diagram: อ่าน สร้าง เปลี่ยนชื่อ ลบ สลับ ย้าย collection และ replace แบบ atomic
 - schema: เพิ่ม แก้ ลบ collection, field, nested field, index และ relation
+- workflow: ดู context ทั้ง project, list/get/save/delete workflow และ lint ทุก workflow
 - quality: ตรวจคำอธิบายและ lint กฎ model
 - output: สร้างโค้ดและเอกสารทั้ง 8 รูปแบบ
 
@@ -182,7 +211,7 @@ error จาก MCP มี machine code เช่น `[PROJECT_NOT_FOUND]`, `[DE
 
 ```mermaid
 flowchart LR
-  UI["Visual Designer"] --> API["Next.js REST API"]
+  UI["Schema + Workflow Designer"] --> API["Next.js REST API"]
   AI["MCP client"] --> MCP["HTTP / stdio"]
   API --> STORE[("data/projects.json")]
   MCP --> STORE
@@ -208,7 +237,7 @@ flowchart LR
 | คำสั่ง | ใช้ทำอะไร |
 |---|---|
 | `npm run dev` | รัน dev server ที่พอร์ต 3100 |
-| `npm test` | รัน regression tests ของ schema, codegen, lint และ key ผสม |
+| `npm test` | รัน regression tests ของ schema, workflow, codegen, lint และ key ผสม |
 | `npm run lint` | ตรวจ ESLint |
 | `npm run build` | สร้าง production build |
 | `npm run mcp:stdio` | รัน MCP transport แบบ stdio |
@@ -220,7 +249,10 @@ flowchart LR
 |---|---|
 | Visual Designer และ project home | `app/page.tsx` |
 | type กลาง, lint และ code generators | `app/schema.ts` |
+| Workflow model, lint และ export | `app/workflow.ts` |
+| Workflow visual editor | `app/workflow-editor.tsx` |
 | project store, revision และ snapshot | `app/store.ts` |
+| Workflow REST CRUD | `app/api/projects/[name]/workflows/route.ts` |
 | MCP tools | `app/mcp/server.ts` |
 | MCP HTTP transport | `app/mcp/route.ts` |
 | Wiki viewer | `app/wiki/[project]/` |
