@@ -411,7 +411,7 @@ button:disabled {
   vector-effect: non-scaling-stroke;
 }
 
-#mm-canvas .react-flow {
+:is(#mm-canvas, #mm-workflow-canvas) .react-flow {
   background: radial-gradient(900px 420px at 50% 8%, rgba(56, 189, 248, 0.045), transparent 72%);
 }
 
@@ -448,7 +448,7 @@ button:disabled {
 }
 @media (max-width: 900px) {
   /* React Flow ใส่ทั้ง class panel และ minimap บน element เดียวกัน — บังคับชนะกฎ package ที่โหลดทีหลัง */
-  #mm-canvas .react-flow__minimap {
+  :is(#mm-canvas, #mm-workflow-canvas) .react-flow__minimap {
     display: none !important;
   }
 }
