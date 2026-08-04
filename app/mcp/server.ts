@@ -41,6 +41,18 @@ import {
   fieldPathEntries,
   keyGroupsOf,
 } from "../schema";
+import {
+  WORKFLOW_HTTP_METHODS,
+  WORKFLOW_OPERATIONS,
+  WORKFLOW_STATUSES,
+  WORKFLOW_STEP_KINDS,
+  lintWorkflow,
+  workflowInputError,
+  workflowToMarkdown,
+  workflowToMermaid,
+  type Workflow,
+  type WorkflowReferenceIndex,
+} from "../workflow";
 
 // ---------- ชนิดข้อมูล node/edge แบบโครงสร้างตรง UI ----------
 
@@ -72,6 +84,10 @@ const ok = (data: unknown) => ({
 const err = (message: string) => ({
   content: [{ type: "text" as const, text: `⚠ ${message}` }],
   isError: true,
+});
+const structuredOk = (data: Record<string, unknown>, text = JSON.stringify(data, null, 2)) => ({
+  content: [{ type: "text" as const, text }],
+  structuredContent: data,
 });
 
 // ---------- กฎคำอธิบายภาษาไทย (บังคับทุก collection/field ที่สร้างผ่าน MCP) ----------
@@ -147,7 +163,11 @@ async function requireProject(name: string): Promise<StoredProject | { error: st
 // ส่ง p.rev เป็น expectedRev เสมอ — mutation ทุกตัวอ่าน (requireProject) แล้วเขียนนอก critical section
 // ถ้าไม่เช็ค rev การยิง tool ขนานกันจะทับกันหายเงียบ (last-write-wins) ทั้งที่ทุก response ตอบ success
 const save = (project: string, p: StoredProject) =>
-  saveProject(project, { tabs: p.tabs, cur: p.cur, diagrams: p.diagrams }, p.rev);
+  saveProject(
+    project,
+    { tabs: p.tabs, cur: p.cur, diagrams: p.diagrams, workflows: p.workflows },
+    p.rev,
+  );
 
 /**
  * ห่อ handler ของ mutation tool: save() ชน rev (มีคนเขียนแทรกระหว่างอ่าน-เขียน) → รัน handler ใหม่ทั้งตัว
@@ -221,6 +241,32 @@ function findField(
     container = f.children;
   }
   return { error: `[FIELD_NOT_FOUND] ไม่พบ field "${ref}"` };
+}
+
+function workflowReferences(p: StoredProject): WorkflowReferenceIndex {
+  const refs: WorkflowReferenceIndex = {};
+  for (const diagram of Object.values(p.diagrams))
+    for (const node of diagram.nodes as N[])
+      refs[node.id] = {
+        label: node.data.label,
+        fields: Object.fromEntries(
+          fieldPathEntries(node.data.fields).map(({ path, field }) => [field.id, path]),
+        ),
+      };
+  return refs;
+}
+
+function findWorkflow(
+  p: StoredProject,
+  ref: string,
+): Workflow | { error: string } {
+  const workflows = p.workflows ?? {};
+  if (Object.hasOwn(workflows, ref)) return workflows[ref];
+  const matches = Object.values(workflows).filter((workflow) => workflow.name === ref);
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1)
+    return { error: `[WORKFLOW_AMBIGUOUS] ชื่อ workflow \"${ref}\" ซ้ำ — ใช้ id แทน` };
+  return { error: `[WORKFLOW_NOT_FOUND] ไม่พบ workflow \"${ref}\"` };
 }
 
 type IndexInput = {
@@ -492,6 +538,8 @@ const LIMIT_COLLECTIONS = { error: "[TOO_MANY_COLLECTIONS] collections เกิ
 const LIMIT_RELATIONS = { error: "[TOO_MANY_RELATIONS] relations เกิน 500 รายการต่อคำสั่ง — แบ่งส่งเป็นหลายครั้งด้วย add_relation" };
 const LIMIT_INDEXES = { error: "[TOO_MANY_INDEXES] indexes ที่กำหนดเพิ่มเกิน 63 รายการ — MongoDB จำกัดรวม _id และ index อัตโนมัติไม่เกิน 64 รายการต่อ collection" };
 const LIMIT_INDEX_FIELDS = { error: "[TOO_MANY_INDEX_FIELDS] compound index เกิน 32 ฟิลด์ — ลดจำนวนสมาชิกตามเพดาน MongoDB" };
+const LIMIT_WORKFLOW_TEXT = { error: "[WORKFLOW_TEXT_TOO_LONG] ข้อความ workflow ยาวเกิน 2,000 ตัวอักษร" };
+const LIMIT_WORKFLOW_ITEMS = { error: "[WORKFLOW_TOO_MANY_ITEMS] รายการย่อยใน workflow เกิน 100 รายการ" };
 
 const fieldShape = {
   name: z.string().min(1).max(200, LIMIT_NAME).describe("ชื่อฟิลด์"),
@@ -536,6 +584,69 @@ const indexInputSchema = z.object({
   sparse: z.boolean().optional().describe("true = ไม่ index เอกสารที่ไม่มีสมาชิกเลย; compound index จะเข้าเมื่อมีอย่างน้อย 1 field"),
 });
 
+const workflowIdSchema = z
+  .string()
+  .min(1, { error: "[WORKFLOW_ID_INVALID] ต้องระบุ id" })
+  .max(100, { error: "[WORKFLOW_ID_INVALID] id ยาวเกิน 100 ตัว" })
+  .regex(/^[A-Za-z0-9_-]+$/, { error: "[WORKFLOW_ID_INVALID] id ใช้ได้เฉพาะ A-Z, a-z, 0-9, _ และ -" });
+const workflowValueSchema = z.object({
+  name: z.string().min(1).max(200, LIMIT_NAME),
+  type: z.string().min(1).max(200, LIMIT_NAME),
+  required: z.boolean().optional(),
+  description: z.string().min(1).max(2_000, LIMIT_WORKFLOW_TEXT),
+});
+const workflowStepSchema = z.object({
+  id: workflowIdSchema,
+  kind: z.enum(WORKFLOW_STEP_KINDS),
+  title: z.string().min(1).max(200, LIMIT_NAME),
+  description: z.string().min(1).max(2_000, LIMIT_WORKFLOW_TEXT),
+  actor: z.string().max(200, LIMIT_NAME).optional(),
+  position: z.object({ x: z.number(), y: z.number() }),
+  inputs: z.array(workflowValueSchema).max(100, LIMIT_WORKFLOW_ITEMS).optional(),
+  outputs: z.array(workflowValueSchema).max(100, LIMIT_WORKFLOW_ITEMS).optional(),
+  api: z.object({ method: z.enum(WORKFLOW_HTTP_METHODS), path: z.string().min(1).max(2_000, LIMIT_WORKFLOW_TEXT) }).optional(),
+  dataAccess: z
+    .array(
+      z.object({
+        collection: z.string().min(1).max(200, LIMIT_NAME),
+        fields: z.array(z.string().min(1).max(200, LIMIT_NAME)).max(300, LIMIT_FIELDS).optional(),
+        operation: z.enum(WORKFLOW_OPERATIONS),
+      }),
+    )
+    .max(100, LIMIT_WORKFLOW_ITEMS)
+    .optional(),
+  rules: z.array(z.string().min(1).max(2_000, LIMIT_WORKFLOW_TEXT)).max(100, LIMIT_WORKFLOW_ITEMS).optional(),
+  errors: z
+    .array(
+      z.object({
+        code: z.string().min(1).max(200, LIMIT_NAME),
+        condition: z.string().min(1).max(2_000, LIMIT_WORKFLOW_TEXT),
+        message: z.string().min(1).max(2_000, LIMIT_WORKFLOW_TEXT),
+      }),
+    )
+    .max(100, LIMIT_WORKFLOW_ITEMS)
+    .optional(),
+});
+const workflowTransitionSchema = z.object({
+  id: workflowIdSchema,
+  source: workflowIdSchema,
+  target: workflowIdSchema,
+  label: z.string().max(2_000, LIMIT_WORKFLOW_TEXT).optional(),
+  condition: z.string().max(2_000, LIMIT_WORKFLOW_TEXT).optional(),
+});
+const workflowInputSchema = z.object({
+  id: workflowIdSchema,
+  name: z.string().min(1).max(200, LIMIT_NAME),
+  description: z.string().min(1).max(2_000, LIMIT_WORKFLOW_TEXT),
+  status: z.enum(WORKFLOW_STATUSES),
+  trigger: z.string().min(1).max(2_000, LIMIT_WORKFLOW_TEXT),
+  preconditions: z.array(z.string().min(1).max(2_000, LIMIT_WORKFLOW_TEXT)).max(100, LIMIT_WORKFLOW_ITEMS).optional(),
+  successOutcome: z.string().max(2_000, LIMIT_WORKFLOW_TEXT).optional(),
+  acceptanceCriteria: z.array(z.string().min(1).max(2_000, LIMIT_WORKFLOW_TEXT)).max(100, LIMIT_WORKFLOW_ITEMS).optional(),
+  steps: z.array(workflowStepSchema).max(300, { error: "[WORKFLOW_TOO_MANY_STEPS] steps เกิน 300 ขั้นตอน" }),
+  transitions: z.array(workflowTransitionSchema).max(500, { error: "[WORKFLOW_TOO_MANY_TRANSITIONS] transitions เกิน 500 เส้น" }),
+});
+
 // ---------- annotations (hint ให้ client ตัดสิน auto-approve) ----------
 // ไม่ใส่ = spec default destructiveHint:true + openWorldHint:true ทุกตัว (client มองว่าอันตรายเท่า delete)
 // ห้ามใส่เหมา — readOnlyHint ผิดตัว = client auto-approve ของที่ mutate
@@ -547,15 +658,15 @@ const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, openWorldHint:
 
 // ---------- server instructions (client เห็นตอน initialize — Claude Code ตัดที่ 2KB ห้ามยาวเกิน 2048 ตัวอักษร) ----------
 
-const INSTRUCTIONS = `MongoModel — เครื่องมือออกแบบ schema MongoDB เป็นผัง ER (project → diagram → collection → field → relation) เก็บในไฟล์ของแอปเอง ไม่แตะฐานข้อมูลจริง
+const INSTRUCTIONS = `MongoModel — เครื่องมือออกแบบ schema MongoDB และ workflow ขั้นตอนงาน เก็บในไฟล์ของแอปเอง ไม่แตะฐานข้อมูลจริง
 กฎบังคับ:
-1. ทุก tool ต้องส่ง project (ชื่อโปรเจกต์) เสมอ — ดูรายชื่อด้วย list_projects
+1. ทุก tool ที่ทำงานใน project ต้องส่ง project (ชื่อโปรเจกต์) — ดูรายชื่อด้วย list_projects
 2. description ของทุก collection/field บังคับภาษาไทย (มีอักขระไทยอย่างน้อย 1 ตัว) — เช็กจุดที่ขาดด้วย check_descriptions
 3. relation เป็น field→field เสมอ และต้องอ้าง business key ของฝั่งแม่ (เช่น code, holdingcode) ห้ามอ้าง guidfixed (identity ภายใน ไม่พกพาข้ามเครื่อง) — ทิศแม่→ลูก (ฝั่งลูกถือ FK)
 4. field ซ้อน (children) รับลึก 2 ชั้นต่อคำสั่ง — ลึกกว่านั้นใช้ add_field พร้อม parent แบบ dotted path
 5. indexes เพิ่มระดับ collection รับ field id หรือ dotted path; แก้ทั้งชุดด้วย update_collection.indexes ([] = ล้าง)
 6. สร้างผังใหม่ทั้งก้อนใช้ replace_diagram (ระวัง: เขียนทับทั้ง diagram); แก้ทีละจุดใช้ add_*/update_*/delete_*
-Workflow แนะนำ: list_projects → list_diagrams → get_diagram (detail:"summary" ประหยัดโทเคน) → แก้ไข → check_descriptions + lint_model → generate_code (mongosh/go/mongoose/typescript/markdown/sample/json/wiki)
+อ่านให้เข้าใจเร็ว: get_project_context → get_diagram/get_workflow · ผังข้อมูล: แก้ไข → check_descriptions + lint_model → generate_code · ขั้นตอนงาน: save_workflow → lint_workflows
 ทุก mutation บันทึกอัตโนมัติ (UI ผู้ใช้ refresh เอง) — แก้พลาดย้อนได้ด้วย list_revisions + restore_revision · error ทุกตัวมี machine code นำหน้า เช่น [PROJECT_NOT_FOUND]`;
 
 // ---------- สร้าง server + ลงทะเบียน tools ----------
@@ -863,6 +974,218 @@ export function createServer(): McpServer {
             hint: "เติมด้วย update_collection / update_field พร้อม description ภาษาไทย",
           });
     }
+  );
+
+  // ----- Workflow ขั้นตอนงาน (ข้อมูล structured สำหรับคน + vibe coding) -----
+
+  server.registerTool(
+    "get_project_context",
+    {
+      title: "อ่านบริบทโปรเจกต์สำหรับเขียนโค้ด",
+      description:
+        "คืนภาพรวม diagram, collection/field id, business key และ workflow พร้อมผล lint แบบ compact — เรียกเป็นคำสั่งแรกเพื่อให้ vibe coding เข้าใจโปรเจกต์โดยไม่ต้องเดา",
+      inputSchema: { project: projectParam },
+      annotations: READ,
+    },
+    async ({ project }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const refs = workflowReferences(p);
+      const diagrams = p.tabs.map((tab) => ({
+        id: tab.id,
+        name: tab.name,
+        collections: ((p.diagrams[tab.id]?.nodes ?? []) as N[]).map((node) => ({
+          id: node.id,
+          label: node.data.label,
+          description: node.data.description,
+          fields: fieldPathEntries(node.data.fields).map(({ path, field }) => ({
+            id: field.id,
+            path,
+            type: field.type,
+            ...(field.required && { required: true }),
+            ...(field.key && { key: true }),
+            ...(field.keygroup && { keygroup: field.keygroup }),
+          })),
+        })),
+      }));
+      const workflows = Object.values(p.workflows ?? {}).map((workflow) => {
+        const issues = lintWorkflow(workflow, refs);
+        return {
+          id: workflow.id,
+          name: workflow.name,
+          status: workflow.status,
+          description: workflow.description,
+          trigger: workflow.trigger,
+          steps: workflow.steps.length,
+          transitions: workflow.transitions.length,
+          errors: issues.filter((issue) => issue.level === "error").length,
+          warnings: issues.filter((issue) => issue.level === "warn").length,
+        };
+      });
+      return structuredOk({ project, projectRev: p.rev, diagrams, workflows });
+    },
+  );
+
+  server.registerTool(
+    "list_workflows",
+    {
+      title: "ดูรายการ workflow",
+      description: "แสดง workflow ขั้นตอนงานทั้งหมด พร้อมสถานะ จำนวนขั้นตอน และผล lint",
+      inputSchema: { project: projectParam },
+      annotations: READ,
+    },
+    async ({ project }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const refs = workflowReferences(p);
+      const workflows = Object.values(p.workflows ?? {}).map((workflow) => {
+        const issues = lintWorkflow(workflow, refs);
+        return {
+          id: workflow.id,
+          name: workflow.name,
+          status: workflow.status,
+          description: workflow.description,
+          trigger: workflow.trigger,
+          steps: workflow.steps.length,
+          transitions: workflow.transitions.length,
+          errors: issues.filter((issue) => issue.level === "error").length,
+          warnings: issues.filter((issue) => issue.level === "warn").length,
+        };
+      });
+      return structuredOk({ projectRev: p.rev, workflows });
+    },
+  );
+
+  server.registerTool(
+    "get_workflow",
+    {
+      title: "อ่าน workflow",
+      description:
+        "อ่าน workflow แบบ structured พร้อม lint; format markdown/mermaid ใช้ส่งต่อเป็นเอกสารได้ โดย structuredContent ยังคืนข้อมูลเต็มเสมอ",
+      inputSchema: {
+        project: projectParam,
+        workflow: z.string().min(1).max(200, LIMIT_NAME).describe("workflow id หรือชื่อ"),
+        format: z.enum(["json", "markdown", "mermaid"]).optional().describe("รูปแบบ text ที่ต้องการ (default json)"),
+      },
+      annotations: READ,
+    },
+    async ({ project, workflow: ref, format }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const workflow = findWorkflow(p, ref);
+      if ("error" in workflow) return err(workflow.error);
+      const refs = workflowReferences(p);
+      const data = { projectRev: p.rev, workflow, issues: lintWorkflow(workflow, refs) };
+      const text =
+        format === "markdown"
+          ? workflowToMarkdown(workflow, refs)
+          : format === "mermaid"
+            ? workflowToMermaid(workflow)
+            : JSON.stringify(data, null, 2);
+      return structuredOk(data, text);
+    },
+  );
+
+  server.registerTool(
+    "save_workflow",
+    {
+      title: "สร้างหรือบันทึก workflow",
+      description:
+        "สร้าง workflow ใหม่เมื่อ id ยังไม่มี หรือแทนที่ workflow id เดิมทั้งก้อนแบบ atomic — อ่านของเดิมด้วย get_workflow ก่อนแก้ และส่ง expectedRev เพื่อกันเขียนทับงานคนอื่น",
+      inputSchema: {
+        project: projectParam,
+        expectedRev: z.number().int().optional().describe("projectRev จาก get_workflow/get_project_context; ไม่ตรงจะไม่บันทึก"),
+        workflow: workflowInputSchema,
+      },
+      annotations: DESTRUCTIVE,
+    },
+    withRetry(async ({ project, expectedRev, workflow }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      if (expectedRev !== undefined && p.rev !== expectedRev)
+        return err(`[REV_CONFLICT] project rev ปัจจุบัน ${p.rev} แต่ส่งมา ${expectedRev} — อ่านใหม่ก่อนบันทึก`);
+      const candidate = workflow as Workflow;
+      const validation = workflowInputError(candidate);
+      if (validation) return err(validation);
+      const workflows = { ...(p.workflows ?? {}) };
+      const duplicate = Object.values(workflows).find(
+        (item) => item.id !== candidate.id && item.name === candidate.name,
+      );
+      if (duplicate)
+        return err(`[DUPLICATE_WORKFLOW_NAME] workflow \"${candidate.name}\" มีอยู่แล้ว (id ${duplicate.id})`);
+      const created = !Object.hasOwn(workflows, candidate.id);
+      Object.defineProperty(workflows, candidate.id, {
+        value: candidate,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+      p.workflows = workflows;
+      const rev = await save(project, p);
+      return structuredOk({ projectRev: rev, created, workflow: candidate });
+    }),
+  );
+
+  server.registerTool(
+    "delete_workflow",
+    {
+      title: "ลบ workflow",
+      description: "ลบ workflow ขั้นตอนงานทั้งชุด — ใช้ id หรือชื่อ",
+      inputSchema: {
+        project: projectParam,
+        workflow: z.string().min(1).max(200, LIMIT_NAME).describe("workflow id หรือชื่อ"),
+        expectedRev: z.number().int().optional().describe("projectRev ล่าสุดเพื่อกันเขียนทับงานคนอื่น"),
+      },
+      annotations: DESTRUCTIVE,
+    },
+    withRetry(async ({ project, workflow: ref, expectedRev }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      if (expectedRev !== undefined && p.rev !== expectedRev)
+        return err(`[REV_CONFLICT] project rev ปัจจุบัน ${p.rev} แต่ส่งมา ${expectedRev} — อ่านใหม่ก่อนลบ`);
+      const workflow = findWorkflow(p, ref);
+      if ("error" in workflow) return err(workflow.error);
+      const workflows = { ...(p.workflows ?? {}) };
+      delete workflows[workflow.id];
+      p.workflows = workflows;
+      const rev = await save(project, p);
+      return structuredOk({ projectRev: rev, id: workflow.id, name: workflow.name });
+    }),
+  );
+
+  server.registerTool(
+    "lint_workflows",
+    {
+      title: "ตรวจ workflow",
+      description:
+        "ตรวจจุดเริ่ม/จบ, ทางตัน, decision, ขั้นตอนที่ไปไม่ถึง และ collection/field reference ที่หลุด — ไม่ส่ง workflow = ตรวจทั้งหมด",
+      inputSchema: {
+        project: projectParam,
+        workflow: z.string().min(1).max(200, LIMIT_NAME).optional().describe("workflow id หรือชื่อ; ไม่ส่ง = ทุก workflow"),
+        level: z.enum(["all", "error"]).optional(),
+      },
+      annotations: READ,
+    },
+    async ({ project, workflow: ref, level }) => {
+      const p = await requireProject(project);
+      if ("error" in p) return err(p.error);
+      const refs = workflowReferences(p);
+      let workflows = Object.values(p.workflows ?? {});
+      if (ref !== undefined) {
+        const found = findWorkflow(p, ref);
+        if ("error" in found) return err(found.error);
+        workflows = [found];
+      }
+      const results = workflows.map((workflow) => {
+        let issues = lintWorkflow(workflow, refs);
+        if (level === "error") issues = issues.filter((issue) => issue.level === "error");
+        return { id: workflow.id, name: workflow.name, issues };
+      });
+      return structuredOk({
+        total: results.reduce((sum, result) => sum + result.issues.length, 0),
+        workflows: results,
+      });
+    },
   );
 
   // ----- จัดการ diagram -----

@@ -42,6 +42,7 @@ import "@xyflow/react/dist/style.css";
 import ELK from "elkjs/lib/elk.bundled.js";
 import WikiViewer from "./wiki/[project]/WikiViewer";
 import type { WikiData } from "./wiki-data";
+import WorkflowEditor from "./workflow-editor";
 import {
   compositeRenderGroups,
   fieldByHandle,
@@ -1857,6 +1858,7 @@ function Designer({
   wikiOpen,
   theme,
   onToggleTheme,
+  onShowWorkflow,
 }: {
   project: string; // ชื่อ project บน server — source of truth
   offline: boolean; // true = โหมดออฟไลน์ (localStorage ล้วน ไม่มีระบบ project)
@@ -1865,6 +1867,7 @@ function Designer({
   wikiOpen: boolean; // wiki ของโปรเจกต์นี้เปิดอยู่ไหม (ไฮไลต์ปุ่ม)
   theme: Theme; // ธีมปัจจุบัน — ส่งต่อให้ react flow ด้วย (colorMode)
   onToggleTheme: () => void;
+  onShowWorkflow?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CollectionNode>([]);
   const [edges, setEdges, applyEdgeChanges] = useEdgesState<RelEdge>([]);
@@ -3213,6 +3216,18 @@ function Designer({
           >
             📖 <span className={compact ? "hidden" : "hidden xl:inline"}>Wiki</span>
           </button>
+          {onShowWorkflow && (
+            <button
+              className="mm-btn border-violet-500/30 text-violet-300"
+              title="ออกแบบ workflow ขั้นตอนงานให้คนและ vibe coding อ่านร่วมกัน"
+              onClick={() => {
+                saveNow();
+                onShowWorkflow();
+              }}
+            >
+              🔀 <span className={compact ? "hidden" : "hidden xl:inline"}>Workflow</span>
+            </button>
+          )}
         </div>
         {/* toolbar ล้น — ปุ่มเลื่อนเป็น "พี่น้อง" ของแถบ ไม่ใช่ overlay absolute ทับปุ่มขวาสุด
             (ของเดิมโปร่งใสแต่กินคลิก: ที่ 1440px ปุ่ม 🕘 กดโดนแค่ 40% ส่วนปุ่มธีมกดไม่โดนเลย) */}
@@ -4148,6 +4163,7 @@ type ProjectSummary = {
   updatedAt: string;
   diagrams: number;
   collections: number;
+  workflows: number;
 };
 
 function ProjectHome({
@@ -4316,8 +4332,8 @@ function ProjectHome({
         </div>
         {/* บอก scope ของแอปให้ผู้ใช้ใหม่รู้ก่อนกดสร้าง — ไม่ต้องเดาว่าแอปทำอะไรได้ */}
         <div className="mb-6 text-xs leading-relaxed text-slate-500">
-          ลากวางออกแบบ collection → เชื่อม relation แบบ field→field → 🩺 ตรวจโมเดล → ⚙️ สร้างโค้ด
-          mongosh/Go/Mongoose/TypeScript + 📖 Wiki — ให้ AI ช่วยแก้ผังได้ผ่าน MCP
+          ลากวาง collection + relation หรือสร้าง 🔀 Workflow ขั้นตอนงาน → 🩺 ตรวจ → ⚙️ สร้างโค้ด/เอกสาร
+          — ให้คนและ vibe coding อ่านบริบทเดียวกันผ่าน MCP
         </div>
 
         {offline ? (
@@ -4406,7 +4422,7 @@ function ProjectHome({
                       <button className="flex-1 text-left" onClick={() => onOpen(p.name)}>
                         <div className="font-medium text-slate-100">{p.name}</div>
                         <div className="text-xs text-slate-500">
-                          {p.diagrams} diagram · {p.collections} collection · แก้ล่าสุด{" "}
+                          {p.diagrams} diagram · {p.collections} collection · {p.workflows ?? 0} workflow · แก้ล่าสุด{" "}
                           {new Date(p.updatedAt).toLocaleString("th-TH")}
                         </div>
                       </button>
@@ -4532,6 +4548,7 @@ function App() {
   const [project, setProject] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [wiki, setWiki] = useState<string | null>(null); // โปรเจกต์ที่เปิด wiki อยู่
+  const [workspaceView, setWorkspaceView] = useState<"schema" | "workflow">("schema");
 
   // deep link: /?project=<ชื่อ> — bookmark/refresh แล้วกลับเข้าโปรเจกต์เดิมได้เลย
   // (client component — อ่าน URL ได้หลัง mount เท่านั้น; ชื่อไม่ถูกต้อง bootstrap จะพากลับหน้าเลือกเอง)
@@ -4559,6 +4576,7 @@ function App() {
   useEffect(() => {
     const onPop = () => {
       setProject(new URLSearchParams(window.location.search).get("project"));
+      setWorkspaceView("schema");
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -4569,6 +4587,7 @@ function App() {
   const toggleWiki = (name: string) => setWiki((w) => (w === name ? null : name));
   const openProject = (name: string) => {
     setProject(name);
+    setWorkspaceView("schema");
     if (wiki !== null && wiki !== name) setWiki(null); // wiki คนละโปรเจกต์ → ปิดกันสับสน
   };
   return (
@@ -4589,6 +4608,19 @@ function App() {
           </ReactFlowProvider>
         ) : project === null ? (
           <ProjectHome onOpen={openProject} onOffline={() => setOffline(true)} onShowWiki={toggleWiki} theme={theme} onToggleTheme={toggleTheme} />
+        ) : workspaceView === "workflow" ? (
+          <ReactFlowProvider key={`${project}:workflow`}>
+            <WorkflowEditor
+              project={project}
+              theme={theme}
+              onBack={() => setWorkspaceView("schema")}
+              onExit={() => {
+                setWorkspaceView("schema");
+                setProject(null);
+              }}
+              onToggleTheme={toggleTheme}
+            />
+          </ReactFlowProvider>
         ) : (
           // key=project → สลับโปรเจกต์ = remount สะอาด
           <ReactFlowProvider key={project}>
@@ -4600,6 +4632,10 @@ function App() {
               wikiOpen={wiki === project}
               theme={theme}
               onToggleTheme={toggleTheme}
+              onShowWorkflow={() => {
+                setWiki(null);
+                setWorkspaceView("workflow");
+              }}
             />
           </ReactFlowProvider>
         )}

@@ -6,12 +6,14 @@
 
 import { promises as fs } from "fs";
 import path from "path";
+import type { Workflow } from "./workflow";
 
 export type StoredDiagram = { nodes: unknown[]; edges: unknown[] };
 export type ProjectData = {
   tabs: { id: string; name: string }[];
   cur: string;
   diagrams: Record<string, StoredDiagram>;
+  workflows?: Record<string, Workflow>;
 };
 export type StoredProject = ProjectData & { rev: number; updatedAt: string };
 export type Workspace = { rev: number; projects: Record<string, StoredProject> };
@@ -19,17 +21,56 @@ export type Workspace = { rev: number; projects: Record<string, StoredProject> }
 const DATA_DIR = path.join(process.cwd(), "data");
 const FILE = path.join(DATA_DIR, "projects.json");
 const LEGACY_FILE = path.join(DATA_DIR, "project.json"); // รูปแบบเก่า (project เดียว) — migrate อัตโนมัติ
+const HISTORY_DIR = path.join(DATA_DIR, "history");
+const WRITE_LOCK_DIR = path.join(DATA_DIR, ".write-lock");
+const WRITE_LOCK_TIMEOUT_MS = 10_000;
+const WRITE_LOCK_STALE_MS = 30_000;
 
 const EMPTY: Workspace = { rev: 0, projects: {} };
 
 // คิวเขียนบน globalThis — dev hot-reload อาจสร้าง module instance ซ้ำ กันเขียนไฟล์ชนกันข้าม instance
 const g = globalThis as {
   __mongomodelQueue?: Promise<unknown>;
-  __mongomodelWsCache?: { data: Workspace; mtimeMs: number; size: number };
+  __mongomodelWsCache?: { data: Workspace; mtimeMs: number; size: number; ino: number };
 };
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * lock ทั้ง workspace ข้าม process — UI/HTTP และ stdio อ่าน-แก้-เขียนไฟล์ก้อนเดียวกัน
+ * ponytail: ใช้ global lock เดียวเพราะมี workspace file เดียว; ค่อย shard เมื่อแยกไฟล์ต่อ project จริง
+ */
+async function withWorkspaceLock<T>(job: () => Promise<T>): Promise<T> {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  const deadline = Date.now() + WRITE_LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      await fs.mkdir(WRITE_LOCK_DIR);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const stat = await fs.stat(WRITE_LOCK_DIR).catch(() => null);
+      if (stat && Date.now() - stat.mtimeMs > WRITE_LOCK_STALE_MS) {
+        await fs.rmdir(WRITE_LOCK_DIR).catch(() => {});
+        continue;
+      }
+      if (Date.now() >= deadline)
+        throw new Error("[STORE_BUSY] ระบบกำลังบันทึกจากอีก process — กรุณาลองใหม่");
+      await wait(20);
+    }
+  }
+  try {
+    // process อื่นอาจเขียนไฟล์ขนาดเท่าเดิมภายใน timestamp tick เดียว — บังคับอ่านใหม่หลังได้ lock
+    delete g.__mongomodelWsCache;
+    return await job();
+  } finally {
+    await fs.rmdir(WRITE_LOCK_DIR).catch(() => {});
+  }
+}
+
 const enqueue = <T>(job: () => Promise<T>): Promise<T> => {
   const prev = g.__mongomodelQueue ?? Promise.resolve();
-  const next = prev.then(job, job);
+  const run = () => withWorkspaceLock(job);
+  const next = prev.then(run, run);
   g.__mongomodelQueue = next.catch(() => {});
   return next;
 };
@@ -40,7 +81,6 @@ export function validProjectName(name: unknown): name is string {
   return typeof name === "string" && name.trim() !== "" && PROJECT_NAME_RE.test(name);
 }
 
-const HISTORY_DIR = path.join(DATA_DIR, "history");
 const HISTORY_KEEP = 20; // เก็บ snapshot ล่าสุดกี่ไฟล์
 
 /**
@@ -108,13 +148,22 @@ export function restoreRevision(rev: number): Promise<{ rev: number; projects: s
 async function writeFile(data: Workspace): Promise<void> {
   await fs.mkdir(DATA_DIR, { recursive: true });
   await snapshot();
-  const tmp = `${FILE}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
-  await fs.rename(tmp, FILE);
+  const tmp = `${FILE}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
+    await fs.rename(tmp, FILE);
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+  }
   // อัปเดต cache ด้วย snapshot ที่เพิ่งเขียน + stat ใหม่ — กัน mtime resolution หยาบบน Docker bind mount
   try {
     const st = await fs.stat(FILE);
-    g.__mongomodelWsCache = { data: structuredClone(data), mtimeMs: st.mtimeMs, size: st.size };
+    g.__mongomodelWsCache = {
+      data: structuredClone(data),
+      mtimeMs: st.mtimeMs,
+      size: st.size,
+      ino: st.ino,
+    };
   } catch {
     delete g.__mongomodelWsCache;
   }
@@ -155,7 +204,7 @@ export async function getWorkspace(): Promise<Workspace> {
   try {
     const st = await fs.stat(FILE);
     const c = g.__mongomodelWsCache;
-    if (c && c.mtimeMs === st.mtimeMs && c.size === st.size) {
+    if (c && c.mtimeMs === st.mtimeMs && c.size === st.size && c.ino === st.ino) {
       return structuredClone(c.data);
     }
     const raw = await fs.readFile(FILE, "utf8");
@@ -165,7 +214,12 @@ export async function getWorkspace(): Promise<Workspace> {
         rev: typeof ws.rev === "number" ? ws.rev : 0,
         projects: ws.projects,
       };
-      g.__mongomodelWsCache = { data: structuredClone(data), mtimeMs: st.mtimeMs, size: st.size };
+      g.__mongomodelWsCache = {
+        data: structuredClone(data),
+        mtimeMs: st.mtimeMs,
+        size: st.size,
+        ino: st.ino,
+      };
       return data; // เพิ่ง parse เอง — cache เก็บ clone แยก caller แตะไม่ถึง
     }
   } catch {
@@ -199,6 +253,7 @@ export type ProjectSummary = {
   updatedAt: string;
   diagrams: number;
   collections: number;
+  workflows: number;
 };
 
 export async function listProjects(): Promise<{ rev: number; projects: ProjectSummary[] }> {
@@ -209,6 +264,7 @@ export async function listProjects(): Promise<{ rev: number; projects: ProjectSu
     updatedAt: p.updatedAt,
     diagrams: p.tabs.length,
     collections: Object.values(p.diagrams).reduce((n, d) => n + d.nodes.length, 0),
+    workflows: Object.keys(p.workflows ?? {}).length,
   }));
   projects.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return { rev: ws.rev, projects };
@@ -235,7 +291,13 @@ export function saveProject(name: string, data: ProjectData, expectedRev?: numbe
       throw new RevConflictError(prev.rev, expectedRev);
     }
     const rev = (prev?.rev ?? 0) + 1;
-    writeProject(ws, name, { rev, updatedAt: new Date().toISOString(), ...data });
+    writeProject(ws, name, {
+      rev,
+      updatedAt: new Date().toISOString(),
+      ...data,
+      // Designer รุ่นเดิมส่งเฉพาะ diagrams — ห้ามทำ workflows ที่ MCP/UI อีกหน้าสร้างไว้หาย
+      workflows: data.workflows ?? prev?.workflows ?? {},
+    });
     ws.rev += 1;
     await writeFile(ws);
     return rev;
@@ -253,6 +315,7 @@ export function createProject(name: string): Promise<void> {
       tabs: [{ id, name: "Main Diagram" }],
       cur: id,
       diagrams: { [id]: { nodes: [], edges: [] } },
+      workflows: {},
     });
     ws.rev += 1;
     await writeFile(ws);
