@@ -34,13 +34,16 @@ import {
   lintWorkflow,
   loginWorkflowTemplate,
   workflowToMarkdown,
+  workflowSchemaUsage,
   type Workflow,
   type WorkflowDataAccess,
   type WorkflowIssue,
   type WorkflowReferenceIndex,
+  type WorkflowSchemaUsage,
   type WorkflowStep,
   type WorkflowValue,
 } from "./workflow";
+import { layoutWorkflow } from "./workflow-layout";
 
 type WorkflowNode = Node<WorkflowStep, "workflow">;
 type WorkflowEdgeData = { label?: string; condition?: string };
@@ -130,7 +133,7 @@ function WorkflowNodeView({ data, selected }: NodeProps<WorkflowNode>) {
   const style = KIND_STYLE[data.kind];
   return (
     <div className={`mm-card w-64 overflow-hidden border ${style.border} ${selected ? "mm-card-selected" : ""}`}>
-      {data.kind !== "start" && <Handle type="target" position={Position.Left} className="!h-3 !w-3 !border-2 !border-slate-950 !bg-amber-400" />}
+      {data.kind !== "start" && <Handle type="target" position={Position.Top} className="!h-3 !w-3 !border-2 !border-slate-950 !bg-amber-400" />}
       <div className={`flex items-center gap-2 px-3 py-1.5 text-[11px] font-semibold ${style.head}`}>
         <span>{style.icon}</span>
         <span>{style.label}</span>
@@ -146,7 +149,7 @@ function WorkflowNodeView({ data, selected }: NodeProps<WorkflowNode>) {
           {!!data.dataAccess?.length && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-300">ข้อมูล {data.dataAccess.length}</span>}
         </div>
       </div>
-      {data.kind !== "end" && <Handle type="source" position={Position.Right} className="!h-3 !w-3 !border-2 !border-slate-950 !bg-sky-400" />}
+      {data.kind !== "end" && <Handle type="source" position={Position.Bottom} className="!h-3 !w-3 !border-2 !border-slate-950 !bg-sky-400" />}
     </div>
   );
 }
@@ -315,6 +318,7 @@ function WorkflowInspector({
   step,
   edge,
   collections,
+  schemaUsage,
   issues,
   onStep,
   onEdge,
@@ -328,6 +332,7 @@ function WorkflowInspector({
   step?: WorkflowStep;
   edge?: WorkflowEdge;
   collections: CollectionOption[];
+  schemaUsage: WorkflowSchemaUsage[];
   issues: WorkflowIssue[];
   onStep: (patch: Partial<WorkflowStep>) => void;
   onEdge: (patch: WorkflowEdgeData) => void;
@@ -361,6 +366,35 @@ function WorkflowInspector({
           <li className="flex gap-2"><span className="text-sky-400">2</span><span>ลากจุดสีฟ้าไปจุดสีเหลืองเพื่อเชื่อมลำดับงาน</span></li>
           <li className="flex gap-2"><span className="text-sky-400">3</span><span>ผูก Collection และฟิลด์ เพื่อให้ AI เข้าใจข้อมูลที่ใช้</span></li>
         </ol>
+        <section className="mt-4 border-t border-white/10 pt-3" aria-label="Schema ที่เกี่ยวข้อง">
+          <div className="flex items-center gap-2">
+            <h3 className="font-semibold text-violet-300">▣ Schema ที่เกี่ยวข้อง</h3>
+            <span className="ml-auto rounded-full bg-violet-500/15 px-2 py-0.5 text-[10px] text-violet-300">{schemaUsage.length}</span>
+          </div>
+          <div className="mt-2 space-y-2">
+            {!schemaUsage.length && <div className="rounded-lg border border-amber-500/20 bg-amber-500/8 p-2 text-xs leading-relaxed text-amber-300">ยังไม่ได้ผูก Schema — เลือกขั้นตอนแล้วเพิ่มใน “อ่าน/เขียนข้อมูล”</div>}
+            {schemaUsage.map((usage) => {
+              const collection = collections.find((option) => option.id === usage.collection);
+              const fieldNames = usage.fields.map((id) => collection?.fields.find((field) => field.id === id)?.path ?? id);
+              return (
+                <button
+                  key={usage.collection}
+                  className="block w-full rounded-lg border border-white/8 bg-white/[0.03] p-2 text-left hover:border-violet-400/35 hover:bg-violet-500/8"
+                  title={collection ? `เปิด ${collection.label} ในแท็บ ${collection.diagramName}` : "ไม่พบ Collection ที่อ้างถึง"}
+                  onClick={() => collection && onOpenSchema({ diagram: collection.diagram, collection: collection.id, ...(usage.fields[0] && { field: usage.fields[0] }) })}
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className={`truncate font-medium ${collection ? "text-slate-100" : "text-amber-300"}`}>{collection?.label ?? `⚠ ${usage.collection}`}</span>
+                    <span className="ml-auto shrink-0 text-[10px] text-slate-500">{usage.steps.length} ขั้นตอน ↗</span>
+                  </div>
+                  {collection && <div className="mt-0.5 truncate text-[10px] text-slate-500">{collection.diagramName}</div>}
+                  <div className="mt-1.5 flex flex-wrap gap-1">{usage.operations.map((operation) => <span key={operation} className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-300">{OPERATION_LABEL[operation]}</span>)}</div>
+                  <div className="mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-slate-400">{fieldNames.length ? fieldNames.join(", ") : "ใช้ทั้ง Collection"}</div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
         <div className="mt-4 space-y-2">
           {issues.length === 0 ? <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/8 p-3 text-xs text-emerald-300">✓ ไม่พบปัญหา</div> : issues.map((issue, index) => (
             <div key={`${issue.rule}:${issue.step ?? ""}:${index}`} className={`rounded-lg border p-2 text-xs ${issue.level === "error" ? "border-red-500/20 bg-red-500/8 text-red-300" : "border-amber-500/20 bg-amber-500/8 text-amber-300"}`}>{issue.level === "error" ? "●" : "▲"} {issue.message}</div>
@@ -429,6 +463,7 @@ export default function WorkflowEditor({
   const [message, setMessage] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [arranging, setArranging] = useState(false);
   const revRef = useRef(0);
   const saveTimer = useRef<number | undefined>(undefined);
   const pending = useRef<Workflow | null>(null);
@@ -451,6 +486,7 @@ export default function WorkflowEditor({
 
   const current = useMemo(() => meta ? fromFlow(meta, nodes, edges) : null, [meta, nodes, edges]);
   const issues = useMemo(() => current ? lintWorkflow(current, references) : [], [current, references]);
+  const schemaUsage = useMemo(() => current ? workflowSchemaUsage(current) : [], [current]);
 
   const applyWorkflowState = useCallback((workflow: Workflow) => {
     const flow = toFlow(workflow);
@@ -765,6 +801,29 @@ export default function WorkflowEditor({
     setEdges(next);
     if (meta && changes.some((change) => change.type === "remove")) commit(meta, nodes, next);
   };
+  const autoLayout = async () => {
+    if (!meta || arranging || nodes.length === 0) return;
+    setArranging(true);
+    try {
+      const positions = await layoutWorkflow(
+        nodes.map((node) => ({
+          id: node.id,
+          width: node.measured?.width ?? 256,
+          height: node.measured?.height ?? 120,
+        })),
+        edges,
+      );
+      const next = nodes.map((node) => ({ ...node, position: positions.get(node.id) ?? node.position }));
+      setNodes(next);
+      commit(meta, next, edges);
+      setMessage("");
+      setTimeout(() => void fitView({ padding: 0.18, duration: 400 }), 60);
+    } catch {
+      setMessage("จัดผัง workflow ไม่สำเร็จ");
+    } finally {
+      setArranging(false);
+    }
+  };
 
   const selectedStepData = nodes.find((node) => node.id === selectedStep)?.data;
   const selectedEdgeData = edges.find((edge) => edge.id === selectedEdge);
@@ -795,6 +854,7 @@ export default function WorkflowEditor({
           <button className="mm-btn" disabled={!current} onClick={() => addStep("end")}>■ จบ</button>
           <button className="mm-btn px-2.5" title="ย้อนการแก้ผัง (Ctrl+Z เมื่อไม่ได้พิมพ์ข้อความ)" disabled={!current || (historySizes.past === 0 && !historyDirty)} onClick={undo}>↶</button>
           <button className="mm-btn px-2.5" title="ทำซ้ำ (Ctrl+Y / Ctrl+Shift+Z)" disabled={!current || historySizes.future === 0} onClick={redo}>↷</button>
+          <button className="mm-btn" title="จัดเรียงขั้นตอนอัตโนมัติ ไม่ให้ทับกัน" disabled={!current || arranging || nodes.length === 0} onClick={() => void autoLayout()}>{arranging ? "◌ กำลังจัด..." : "▦ จัดผัง"}</button>
           <button className={`mm-btn ${issues.length ? "border-amber-500/30 text-amber-300" : "text-emerald-400"}`} disabled={!current} onClick={() => { setSelectedStep(null); setSelectedEdge(null); setShowOverview(true); }}>🩺 {issues.length ? `${issues.length} จุด` : "ผ่าน"}</button>
           <button className="mm-btn" disabled={!current} onClick={() => void fitView({ padding: 0.18, duration: 250 })}>⛶ พอดี</button>
           <button
@@ -886,6 +946,7 @@ export default function WorkflowEditor({
             step={selectedStepData}
             edge={selectedEdgeData}
             collections={collections}
+            schemaUsage={schemaUsage}
             issues={issues}
             onStep={updateStep}
             onEdge={updateEdge}

@@ -34,10 +34,10 @@
 | **เชื่อมความสัมพันธ์อย่างชัดเจน** | relation แบบ field → field, reference/embed, `1:1` / `1:N` / `N:N`, เส้นข้าม diagram และเส้นสรุป key ผสม |
 | **ดูแลผังขนาดใหญ่** | หลาย project, หลาย diagram, ค้นหา, จัดผังอัตโนมัติ, compact LOD ตอนซูมออก และจำ viewport แยกแต่ละ diagram |
 | **ตรวจคุณภาพก่อนนำไปใช้** | lint ทั้ง workspace, ตรวจชนิด FK, business key, index, คำอธิบายภาษาไทย และกฎสำหรับฟิลด์ตัวเลขการเงิน |
-| **อธิบายขั้นตอนธุรกิจให้ AI** | วาด workflow แบบ node/edge, ผูก API และ CRUD กับ collection/field ด้วย stable ID, lint แล้วคัดลอก Markdown + Mermaid ให้ vibe coding อ่านได้ทันที |
+| **อธิบายขั้นตอนธุรกิจให้ AI** | วาด workflow แบบ node/edge, จัดผังบน→ล่างด้วย ELK, ผูก API และ CRUD กับ collection/field ด้วย stable ID และดูสรุป “Schema ที่เกี่ยวข้อง” ก่อนส่งให้ vibe coding |
 | **ส่งออกงานต่อได้ทันที** | สร้าง mongosh, Go, Mongoose, TypeScript, Markdown, Wiki, sample JSON และไฟล์ diagram JSON |
 | **ทำงานร่วมกับ AI** | MCP 31 tools ผ่าน HTTP หรือ stdio สำหรับอ่าน แก้ ตรวจ สร้างโค้ด และทำ CRUD workflow จากข้อมูลเดียวกับหน้าเว็บ |
-| **ทำงานหลายหน้าต่างได้** | autosave, sync ระหว่างแท็บ/เบราว์เซอร์, optimistic concurrency และ snapshot ย้อนกลับ 20 รุ่นล่าสุด |
+| **ทำงานหลายหน้าต่างได้** | autosave และ sync ข้อมูลระหว่างแท็บ/เบราว์เซอร์ โดยแต่ละ browser tab เลือก diagram ของตัวเองได้อิสระ พร้อม optimistic concurrency และ snapshot ย้อนกลับ 20 รุ่นล่าสุด |
 
 ## หน้าจอจริง
 
@@ -70,14 +70,14 @@
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/workflow-login.png"><img src="docs/screenshots/workflow-login.png" alt="Workflow Login แสดงภาพรวมผัง คำแนะนำ และผลตรวจใน MongoModel" /></a>
-      <br /><strong>5. Workflow Login ที่อ่านตามได้ทันที</strong>
-      <br />แม่แบบพร้อมทางสำเร็จ–ล้มเหลว มี autosave, ย้อน/ทำซ้ำ และตัวตรวจผังพร้อมคำแนะนำมือใหม่ในหน้าจอเดียว
+      <a href="docs/screenshots/workflow-login.png"><img src="docs/screenshots/workflow-login.png" alt="Workflow Login จัดผังจากบนลงล่างและแสดง Schema ที่เกี่ยวข้อง" /></a>
+      <br /><strong>5. เห็น Workflow และ Schema ที่ใช้ในจอเดียว</strong>
+      <br />ปุ่มจัดผังวางขั้นตอนบน→ล่างอัตโนมัติ ส่วนแผงด้านขวาสรุปเฉพาะ collection, field และ CRUD ที่ workflow อ้างถึง พร้อมกดกลับไปยัง Schema
     </td>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/workflow-step-details.png"><img src="docs/screenshots/workflow-step-details.png" alt="รายละเอียดขั้นตอน Workflow ที่ผูก CRUD กับ collection และหลาย field" /></a>
+      <a href="docs/screenshots/workflow-step-details.png"><img src="docs/screenshots/workflow-step-details.png" alt="รายละเอียดขั้นตอน Workflow ที่ผูก CRUD กับ shopusers และ shopuseraccesslogs" /></a>
       <br /><strong>6. ผูก CRUD กับ Schema โดยตรง</strong>
-      <br />เลือก operation, collection และหลาย field แล้วเปิดกลับไปยัง Schema จุดเดิมได้ทันทีด้วย stable ID
+      <br />หนึ่งขั้นตอนอ้างได้หลาย collection เลือก field ได้ละเอียด และเปิดกลับไปยัง Schema จุดเดิมได้ทันทีด้วย stable ID
     </td>
   </tr>
 </table>
@@ -140,10 +140,10 @@ Workflow ใช้อธิบายว่า feature ทำงานอย่�
 
 1. เปิด project แล้วกด **Workflow**
 2. สร้างผังว่างหรือเลือก **Login template**
-3. เชื่อมการ์ดและระบุ `Create / Read / Update / Delete` ที่แต่ละขั้นตอนใช้
-4. ใช้ **↶ / ↷** หรือ `Ctrl+Z / Ctrl+Y` เมื่อโฟกัสอยู่บนผังเพื่อย้อนและทำซ้ำ แล้วกด **เปิดใน Schema** เพื่อไปยัง collection/field ที่ขั้นตอนนั้นอ้างถึง
+3. เชื่อมการ์ดและระบุ `Create / Read / Update / Delete` ที่แต่ละขั้นตอนใช้ แผง **Schema ที่เกี่ยวข้อง** จะรวม collection, field และ operation จาก `dataAccess` ให้เอง
+4. กด **จัดผัง** เพื่อเรียงขั้นตอนบน→ล่าง หรือใช้ **↶ / ↷** และ `Ctrl+Z / Ctrl+Y` เพื่อย้อน/ทำซ้ำ แล้วกด **เปิดใน Schema** เพื่อไปยัง collection/field ที่อ้างถึง
 5. กด **ตรวจ** เพื่อหา step ที่ไปไม่ถึง, decision ที่ไม่มีทางออก หรือ reference ที่หลุดจาก schema
-6. กด **ส่งให้ AI** เพื่อคัดลอก Markdown + Mermaid หรือให้ MCP เรียก `get_project_context` / `get_workflow`
+6. กด **ส่งให้ AI** เพื่อคัดลอก Markdown + Mermaid ที่มีหัวข้อ Schema หรือให้ MCP เรียก `get_project_context` / `get_workflow` ซึ่งคืน `schemas` ชุดเดียวกับหน้าเว็บ
 
 Workflow ใช้ collection และ field ID เดียวกับ model จึง rename ได้โดย reference ไม่หลุด, autosave และ sync ด้วย `rev` ชุดเดียวกัน ไม่ต้องตั้งค่าเพิ่มนอกจากเปิด project เดิม ข้อจำกัดคือยังไม่ใช่ workflow runtime: แอปไม่เรียก API หรือ execute business process ให้เอง
 
@@ -252,6 +252,7 @@ flowchart LR
 | type กลาง, lint และ code generators | `app/schema.ts` |
 | Workflow model, lint และ export | `app/workflow.ts` |
 | Workflow visual editor | `app/workflow-editor.tsx` |
+| Workflow auto-layout (ELK) | `app/workflow-layout.ts` |
 | project store, revision และ snapshot | `app/store.ts` |
 | Workflow REST CRUD | `app/api/projects/[name]/workflows/route.ts` |
 | MCP tools | `app/mcp/server.ts` |
