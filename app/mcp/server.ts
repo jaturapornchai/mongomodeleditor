@@ -50,6 +50,7 @@ import {
   workflowInputError,
   workflowToMarkdown,
   workflowToMermaid,
+  workflowSchemaUsage,
   type Workflow,
   type WorkflowReferenceIndex,
 } from "../workflow";
@@ -785,7 +786,7 @@ export function createServer(): McpServer {
     "list_diagrams",
     {
       title: "ดูรายชื่อ diagram",
-      description: "แสดงรายการ diagram ทั้งหมดใน project (id, ชื่อ, จำนวน collection, อันที่กำลังเปิด)",
+      description: "แสดงรายการ diagram ทั้งหมดใน project (id, ชื่อ, จำนวน collection, ค่าเริ่มต้นของ MCP)",
       inputSchema: { project: projectParam },
       annotations: READ,
     },
@@ -1018,6 +1019,7 @@ export function createServer(): McpServer {
           trigger: workflow.trigger,
           steps: workflow.steps.length,
           transitions: workflow.transitions.length,
+          schemas: workflowSchemaUsage(workflow).length,
           errors: issues.filter((issue) => issue.level === "error").length,
           warnings: issues.filter((issue) => issue.level === "warn").length,
         };
@@ -1048,6 +1050,7 @@ export function createServer(): McpServer {
           trigger: workflow.trigger,
           steps: workflow.steps.length,
           transitions: workflow.transitions.length,
+          schemas: workflowSchemaUsage(workflow).length,
           errors: issues.filter((issue) => issue.level === "error").length,
           warnings: issues.filter((issue) => issue.level === "warn").length,
         };
@@ -1061,7 +1064,7 @@ export function createServer(): McpServer {
     {
       title: "อ่าน workflow",
       description:
-        "อ่าน workflow แบบ structured พร้อม lint; format markdown/mermaid ใช้ส่งต่อเป็นเอกสารได้ โดย structuredContent ยังคืนข้อมูลเต็มเสมอ",
+        "อ่าน workflow แบบ structured พร้อม Schema ที่ใช้และผล lint; format markdown/mermaid ใช้ส่งต่อเป็นเอกสารได้ โดย structuredContent ยังคืนข้อมูลเต็มเสมอ",
       inputSchema: {
         project: projectParam,
         workflow: z.string().min(1).max(200, LIMIT_NAME).describe("workflow id หรือชื่อ"),
@@ -1075,7 +1078,12 @@ export function createServer(): McpServer {
       const workflow = findWorkflow(p, ref);
       if ("error" in workflow) return err(workflow.error);
       const refs = workflowReferences(p);
-      const data = { projectRev: p.rev, workflow, issues: lintWorkflow(workflow, refs) };
+      const schemas = workflowSchemaUsage(workflow).map((usage) => ({
+        ...usage,
+        label: refs[usage.collection]?.label,
+        fields: usage.fields.map((id) => ({ id, name: refs[usage.collection]?.fields[id] })),
+      }));
+      const data = { projectRev: p.rev, workflow, schemas, issues: lintWorkflow(workflow, refs) };
       const text =
         format === "markdown"
           ? workflowToMarkdown(workflow, refs)
@@ -1262,7 +1270,7 @@ export function createServer(): McpServer {
     "switch_diagram",
     {
       title: "สลับ diagram",
-      description: "สลับ diagram ปัจจุบัน (อันที่ UI กำลังเปิด / default ของ tools อื่น)",
+      description: "ตั้ง diagram ค่าเริ่มต้นของ tools อื่น (ไม่เปลี่ยนแท็บที่แต่ละหน้า UI กำลังเปิด)",
       inputSchema: { project: projectParam, diagram: diagramParam },
       annotations: WRITE_IDEM,
     },

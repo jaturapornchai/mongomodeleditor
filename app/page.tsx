@@ -46,6 +46,7 @@ import WorkflowEditor, { type SchemaFocusTarget } from "./workflow-editor";
 import {
   compositeRenderGroups,
   fieldByHandle,
+  firstExistingDiagramId,
   indexInputRows,
   persistedFlowDiagram,
 } from "./diagram";
@@ -120,6 +121,14 @@ const uid = () => crypto.randomUUID().slice(0, 8);
 const INDEX_KEY = "mongomodel:index";
 const LEGACY_KEY = "mongomodel";
 const dataKey = (id: string) => `mongomodel:d:${id}`;
+const activeDiagramKey = (project: string) => `mongomodel:active:${project}`;
+const loadActiveDiagram = (project: string): string => {
+  try {
+    return sessionStorage.getItem(activeDiagramKey(project)) ?? "";
+  } catch {
+    return "";
+  }
+};
 // viewport (zoom/pan) ล่าสุดต่อ diagram — เปิดกลับมาอยู่ที่เดิม ไม่รีเซ็ตเป็น fit view เสมอ
 const vpKey = (id: string) => `mongomodel:vp:${id}`;
 const loadVp = (id: string): { x: number; y: number; zoom: number } | null => {
@@ -1932,6 +1941,7 @@ function Designer({
   const [allDiagrams, setAllDiagrams] = useState<Record<string, { nodes: CollectionNode[]; edges: RelEdge[] }>>({});
   const initialFocusDone = useRef(false);
   const knownRev = useRef<number | null>(null); // rev ล่าสุดที่ UI รู้ — ต่างจาก server = มีคนอื่นแก้
+  const serverCur = useRef(""); // diagram ค่าเริ่มต้นของ MCP/server; ไม่ใช่แท็บที่ browser แต่ละหน้าเปิดอยู่
   const lastPayload = useRef(""); // payload ล่าสุดที่ server มี — กัน autosave ยิง PUT ซ้ำตอน refresh/โหลด (ไม่งั้น rev ไถลและของที่ AI ลบเด้งกลับ)
   const serverOn = useRef(false); // bootstrap ต่อ server ได้ไหม — ไม่ได้ = โหมด offline (localStorage ล้วน)
   // PUT เจอ 409 ค้างอยู่ — local มีการแก้ที่ยังไม่ถูก push ห้าม poll เอาของ server มาทับเงียบ (ต้องรอผู้ใช้กดโหลดที่แถบเตือน)
@@ -2012,6 +2022,9 @@ function Designer({
     setNodes(d.nodes);
     setEdges(d.edges);
     setCur(id);
+    try {
+      sessionStorage.setItem(activeDiagramKey(project), id);
+    } catch {}
     setInspectedEdgeId(null);
     loadedId.current = id;
     // ล้าง history — undo ไม่ข้าม diagram
@@ -2104,7 +2117,8 @@ function Designer({
     if (offline) {
       const idx = loadIndex();
       setTabs(idx.tabs);
-      openDiagram(idx.cur);
+      const localCur = loadActiveDiagram(project);
+      openDiagram(idx.tabs.some((tab) => tab.id === localCur) ? localCur : idx.cur);
       return;
     }
     type SP = {
@@ -2121,6 +2135,7 @@ function Designer({
         throw new Error();
       serverOn.current = true;
       knownRev.current = p.rev;
+      serverCur.current = p.cur;
       const cleanDiagrams = persistedDiagramMap(p.diagrams);
       diagramsMap.current = cleanDiagrams;
       setAllDiagrams(cleanDiagrams);
@@ -2131,7 +2146,10 @@ function Designer({
         trySave(dataKey(t.id), JSON.stringify(cleanDiagrams[t.id] ?? { nodes: [], edges: [] }));
       }
       setTabs(p.tabs);
-      openDiagram(p.cur);
+      openDiagram(
+        firstExistingDiagramId(cleanDiagrams, loadActiveDiagram(project), p.cur, p.tabs[0]?.id) ||
+          p.tabs[0].id
+      );
     } catch {
       onExit();
     }
@@ -2177,13 +2195,20 @@ function Designer({
             return;
           }
           knownRev.current = p.rev;
+          serverCur.current = p.cur;
           // auto refresh — เอาของใหม่จาก server มาทับ (preserveView กันจอเด้ง)
           const cleanDiagrams = persistedDiagramMap(p.diagrams);
           diagramsMap.current = cleanDiagrams;
           setAllDiagrams(cleanDiagrams);
           lastPayload.current = payload;
           setTabs(p.tabs);
-          const id = cleanDiagrams[p.cur] ? p.cur : p.tabs[0]?.id;
+          const id = firstExistingDiagramId(
+            cleanDiagrams,
+            loadedId.current,
+            loadActiveDiagram(project),
+            p.cur,
+            p.tabs[0]?.id
+          );
           // ประวัติ undo เป็นของ state ชุดเก่า — openDiagram ล้างทิ้ง ต้องบอกผู้ใช้ตรงๆ (ไม่ให้กด Ctrl+Z แล้วงง)
           const histLost = past.current.length > 0 || future.current.length > 0;
           if (id) openDiagram(id, true);
@@ -2244,7 +2269,12 @@ function Designer({
           );
         }
       }
-      const payload = JSON.stringify({ tabs, cur, diagrams: diagramsMap.current });
+      const sharedCur = firstExistingDiagramId(
+        diagramsMap.current,
+        serverCur.current,
+        tabs[0]?.id
+      );
+      const payload = JSON.stringify({ tabs, cur: sharedCur, diagrams: diagramsMap.current });
       if (payload !== lastPayload.current) void pushToServer(payload);
     }, 400);
     return () => clearTimeout(t);
@@ -3429,7 +3459,15 @@ function Designer({
             title="บันทึกของในเครื่องทับ server (การแก้จาก AI/แท็บอื่นที่ชนกันจะถูกทิ้ง)"
             onClick={() => {
               saveNow();
-              pushToServer(JSON.stringify({ tabs, cur, diagrams: diagramsMap.current }), true);
+              const sharedCur = firstExistingDiagramId(
+                diagramsMap.current,
+                serverCur.current,
+                tabs[0]?.id
+              );
+              pushToServer(
+                JSON.stringify({ tabs, cur: sharedCur, diagrams: diagramsMap.current }),
+                true
+              );
             }}
           >
             💾 ใช้ของในเครื่อง (ทับ server)

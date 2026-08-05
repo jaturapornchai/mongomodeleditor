@@ -8,6 +8,7 @@ import {
   workflowToMarkdown,
   workflowToMermaid,
 } from "../app/workflow";
+import { layoutWorkflow } from "../app/workflow-layout";
 
 test("login workflow is structurally valid and exportable for vibe coding", () => {
   const workflow = loginWorkflowTemplate();
@@ -45,4 +46,14 @@ test("workflow lint resolves stable collection and field ids", () => {
     }).some((issue) => issue.rule === "workflow-collection-missing" || issue.rule === "workflow-field-missing"),
     false,
   );
+});
+
+test("workflow auto-layout places connected steps from top to bottom", async () => {
+  const positions = await layoutWorkflow(
+    [{ id: "start" }, { id: "action" }, { id: "isolated" }],
+    [{ id: "t1", source: "start", target: "action" }],
+  );
+  assert.equal(positions.size, 3);
+  assert.ok((positions.get("start")?.y ?? Infinity) < (positions.get("action")?.y ?? -Infinity));
+  assert.notDeepEqual(positions.get("start"), positions.get("action"));
 });

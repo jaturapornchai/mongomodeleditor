@@ -69,6 +69,39 @@ export type WorkflowReferenceIndex = Record<
   { label: string; fields: Record<string, string> }
 >;
 
+export type WorkflowSchemaUsage = {
+  collection: string;
+  fields: string[];
+  operations: WorkflowOperation[];
+  steps: { id: string; title: string }[];
+};
+
+/** รวม schema ที่ workflow ใช้จริงจาก dataAccess ของทุกขั้นตอน */
+export function workflowSchemaUsage(workflow: Workflow): WorkflowSchemaUsage[] {
+  const usage = new Map<string, WorkflowSchemaUsage & { allFields: boolean }>();
+  for (const step of workflow.steps)
+    for (const access of step.dataAccess ?? []) {
+      const item = usage.get(access.collection) ?? {
+        collection: access.collection,
+        fields: [],
+        operations: [],
+        steps: [],
+        allFields: false,
+      };
+      if (!access.fields?.length) item.allFields = true;
+      else
+        for (const field of access.fields)
+          if (!item.fields.includes(field)) item.fields.push(field);
+      if (!item.operations.includes(access.operation)) item.operations.push(access.operation);
+      if (!item.steps.some(({ id }) => id === step.id)) item.steps.push({ id: step.id, title: step.title });
+      usage.set(access.collection, item);
+    }
+  return [...usage.values()].map(({ allFields, ...item }) => ({
+    ...item,
+    fields: allFields ? [] : item.fields,
+  }));
+}
+
 const THAI_RE = /[\u0E00-\u0E7F]/;
 const ID_RE = /^[A-Za-z0-9_-]{1,100}$/;
 const RESERVED_IDS = new Set(["__proto__", "prototype", "constructor"]);
@@ -334,6 +367,7 @@ export function workflowToMarkdown(
   references: WorkflowReferenceIndex = {},
 ): string {
   const stepById = new Map(workflow.steps.map((step) => [step.id, step]));
+  const schemas = workflowSchemaUsage(workflow);
   const out = [
     `# Workflow: ${workflow.name}`,
     "",
@@ -346,6 +380,16 @@ export function workflowToMarkdown(
     "## Preconditions",
     "",
     list(workflow.preconditions),
+    "",
+    "## Schema ที่ใช้",
+    "",
+    ...(schemas.length
+      ? schemas.map((usage) => {
+          const ref = references[usage.collection];
+          const fields = usage.fields.map((id) => ref?.fields[id] ?? id).join(", ");
+          return `- ${usage.operations.join("/")} \`${ref?.label ?? usage.collection}\`${fields ? ` (${fields})` : " (ทั้ง Collection)"} — ${usage.steps.length} ขั้นตอน`;
+        })
+      : ["- ยังไม่ได้ผูก Schema"]),
     "",
     "## Steps",
     "",

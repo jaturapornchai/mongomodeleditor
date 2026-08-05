@@ -1,5 +1,13 @@
 import type { CollectionData, GenEdge, GenNode } from "./schema";
 
+/** เลือก diagram แรกที่ยังมีอยู่ โดยให้สถานะเฉพาะ browser tab มาก่อนค่า default กลาง */
+export function firstExistingDiagramId(
+  diagrams: Record<string, unknown>,
+  ...candidates: (string | null | undefined)[]
+): string {
+  return candidates.find((id): id is string => Boolean(id && Object.hasOwn(diagrams, id))) ?? "";
+}
+
 /** รวมเฉพาะ mapping ระหว่าง keygroup คู่เดียวกันและ semantics เดียวกัน */
 export function compositeRelationGroups<T extends GenEdge & { id: string }>(
   nodes: GenNode[],

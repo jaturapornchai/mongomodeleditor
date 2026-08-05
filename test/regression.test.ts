@@ -4,10 +4,12 @@ import { test } from "node:test";
 import {
   compositeRelationGroups,
   compositeRenderGroups,
+  firstExistingDiagramId,
   indexInputRows,
   persistedFlowDiagram,
 } from "../app/diagram";
 import { createServer } from "../app/mcp/server";
+import { workflowSchemaUsage, workflowToMarkdown, type Workflow } from "../app/workflow";
 import {
   demo,
   lintProject,
@@ -369,6 +371,34 @@ test("persisted diagrams exclude transient React Flow state", () => {
     nodes: [{ id: "n", data: {} }],
     edges: [{ id: "e" }],
   });
+});
+
+test("browser tabs keep their active diagram when shared data refreshes", () => {
+  const diagrams = { schema: {}, workflow: {} };
+  assert.equal(firstExistingDiagramId(diagrams, "schema", "workflow"), "schema");
+  assert.equal(firstExistingDiagramId({ workflow: {} }, "schema", "workflow"), "workflow");
+});
+
+test("workflow reports only referenced schema with operations and fields", () => {
+  const workflow: Workflow = {
+    id: "login",
+    name: "เข้าสู่ระบบ",
+    description: "ยืนยันตัวตนผู้ใช้",
+    status: "draft",
+    trigger: "ผู้ใช้กดเข้าสู่ระบบ",
+    steps: [
+      { id: "verify", kind: "action", title: "ตรวจบัญชี", description: "อ่านข้อมูลบัญชี", position: { x: 0, y: 0 }, dataAccess: [{ collection: "users", fields: ["username", "passwordhash"], operation: "read" }] },
+      { id: "audit", kind: "action", title: "บันทึกการใช้งาน", description: "แก้ไขเวลาเข้าใช้", position: { x: 1, y: 1 }, dataAccess: [{ collection: "users", operation: "update" }] },
+    ],
+    transitions: [{ id: "verify-audit", source: "verify", target: "audit" }],
+  };
+  assert.deepEqual(workflowSchemaUsage(workflow), [{
+    collection: "users",
+    fields: [],
+    operations: ["read", "update"],
+    steps: [{ id: "verify", title: "ตรวจบัญชี" }, { id: "audit", title: "บันทึกการใช้งาน" }],
+  }]);
+  assert.match(workflowToMarkdown(workflow, { users: { label: "users", fields: {} } }), /## Schema ที่ใช้[\s\S]*read\/update `users` \(ทั้ง Collection\) — 2 ขั้นตอน/);
 });
 
 test("index editor accepts comma separators without breaking exact field names", () => {
