@@ -3,7 +3,7 @@
 <p align="center">
   <strong>Visual MongoDB Data Model Editor สำหรับทีมที่คิด ออกแบบ และอธิบายระบบเป็นภาษาไทย</strong>
   <br />
-  วาง collection บน canvas · สร้าง workflow ธุรกิจ · ตรวจ model · ส่งออกโค้ด · เปิดให้ AI อ่านต่อผ่าน MCP
+  วาง collection บน canvas · สร้างและเดินสำรวจ workflow · ตรวจ model · ส่งออกโค้ด · เปิดให้ AI อ่านต่อผ่าน MCP
 </p>
 
 <p align="center">
@@ -34,7 +34,7 @@
 | **เชื่อมความสัมพันธ์อย่างชัดเจน** | relation แบบ field → field, reference/embed, `1:1` / `1:N` / `N:N`, เส้นข้าม diagram และเส้นสรุป key ผสม |
 | **ดูแลผังขนาดใหญ่** | หลาย project, หลาย diagram, ค้นหา, จัดผังอัตโนมัติ, compact LOD ตอนซูมออก และจำ viewport แยกแต่ละ diagram |
 | **ตรวจคุณภาพก่อนนำไปใช้** | lint ทั้ง workspace, ตรวจชนิด FK, business key, index, คำอธิบายภาษาไทย และกฎสำหรับฟิลด์ตัวเลขการเงิน |
-| **อธิบายขั้นตอนธุรกิจให้ AI** | วาด workflow แบบ node/edge, จัดผังบน→ล่างด้วย ELK, ผูก API และ CRUD กับ collection/field ด้วย stable ID และดูสรุป “Schema ที่เกี่ยวข้อง” ก่อนส่งให้ vibe coding |
+| **อธิบายขั้นตอนธุรกิจให้ AI** | วาด workflow แบบ node/edge, จัดผังบน→ล่างด้วย ELK, ผูก API และ CRUD กับ collection/field ด้วย stable ID, ดู “Schema ที่เกี่ยวข้อง” และเปิดโหมด 3D เพื่อเดินสำรวจ topology เดียวกับผังต้นแบบ |
 | **ส่งออกงานต่อได้ทันที** | สร้าง mongosh, Go, Mongoose, TypeScript, Markdown, Wiki, sample JSON และไฟล์ diagram JSON |
 | **ทำงานร่วมกับ AI** | MCP 31 tools ผ่าน HTTP หรือ stdio สำหรับอ่าน แก้ ตรวจ สร้างโค้ด และทำ CRUD workflow จากข้อมูลเดียวกับหน้าเว็บ |
 | **ทำงานหลายหน้าต่างได้** | autosave และ sync ข้อมูลระหว่างแท็บ/เบราว์เซอร์ โดยแต่ละ browser tab เลือก diagram ของตัวเองได้อิสระ พร้อม optimistic concurrency และ snapshot ย้อนกลับ 20 รุ่นล่าสุด |
@@ -42,6 +42,16 @@
 ## หน้าจอจริง
 
 กดภาพเพื่อเปิดขนาดเต็ม
+
+<p align="center">
+  <a href="docs/screenshots/workflow-3d.png">
+    <img src="docs/screenshots/workflow-3d.png" alt="Workflow 3D แสดง Step, transition, branching และตัวละครที่เดินตามผังจริง" width="100%" />
+  </a>
+  <br />
+  <strong>สำรวจ Workflow 3D แบบ interactive</strong>
+  <br />
+  <sub>ตำแหน่งและกิ่งยึดผัง 2D เดิม เส้นกับลูกศรแสดงทิศทาง ลูกแสงเคลื่อนตาม transition และตัวละครเดินไปยัง Step ที่คลิก</sub>
+</p>
 
 <table>
   <tr>
@@ -102,7 +112,8 @@ npm run dev
 3. ทำเครื่องหมาย business key หรือรวมหลาย field เป็น key ผสม
 4. ลาก relation จาก field ฝั่งลูกไปยัง business key ฝั่งแม่
 5. เปิด **Workflow** เพื่อวาดขั้นตอนธุรกิจเอง หรือเริ่มจากแม่แบบ **Login**
-6. กด **ตรวจ** แล้วเลือก **สร้างโค้ด**, **Wiki** หรือ **ส่งให้ AI**
+6. กด **🎮 เดิน 3D** เพื่อสำรวจขั้นตอนและ branching ในแท็บใหม่
+7. กด **ตรวจ** แล้วเลือก **สร้างโค้ด**, **Wiki** หรือ **ส่งให้ AI**
 
 ### รันด้วย Docker Desktop
 
@@ -142,10 +153,13 @@ Workflow ใช้อธิบายว่า feature ทำงานอย่�
 2. สร้างผังว่างหรือเลือก **Login template**
 3. เชื่อมการ์ดและระบุ `Create / Read / Update / Delete` ที่แต่ละขั้นตอนใช้ แผง **Schema ที่เกี่ยวข้อง** จะรวม collection, field และ operation จาก `dataAccess` ให้เอง
 4. กด **จัดผัง** เพื่อเรียงขั้นตอนบน→ล่าง หรือใช้ **↶ / ↷** และ `Ctrl+Z / Ctrl+Y` เพื่อย้อน/ทำซ้ำ แล้วกด **เปิดใน Schema** เพื่อไปยัง collection/field ที่อ้างถึง
-5. กด **ตรวจ** เพื่อหา step ที่ไปไม่ถึง, decision ที่ไม่มีทางออก หรือ reference ที่หลุดจาก schema
-6. กด **ส่งให้ AI** เพื่อคัดลอก Markdown + Mermaid ที่มีหัวข้อ Schema หรือให้ MCP เรียก `get_project_context` / `get_workflow` ซึ่งคืน `schemas` ชุดเดียวกับหน้าเว็บ
+5. กด **🎮 เดิน 3D** แอปจะบันทึกงานก่อนเปิดแท็บใหม่ โดยเริ่มที่ Step ที่เลือกหรือจุดเริ่มต้น ใช้เมาส์ซ้ายหมุน เมาส์ขวาเลื่อน ล้อเมาส์ซูม และคลิก Step ให้ตัวละครเดินตามเส้นทางสั้นสุด
+6. กด **ตรวจ** เพื่อหา step ที่ไปไม่ถึง, decision ที่ไม่มีทางออก หรือ reference ที่หลุดจาก schema
+7. กด **ส่งให้ AI** เพื่อคัดลอก Markdown + Mermaid ที่มีหัวข้อ Schema หรือให้ MCP เรียก `get_project_context` / `get_workflow` ซึ่งคืน `schemas` ชุดเดียวกับหน้าเว็บ
 
-Workflow ใช้ collection และ field ID เดียวกับ model จึง rename ได้โดย reference ไม่หลุด, autosave และ sync ด้วย `rev` ชุดเดียวกัน ไม่ต้องตั้งค่าเพิ่มนอกจากเปิด project เดิม ข้อจำกัดคือยังไม่ใช่ workflow runtime: แอปไม่เรียก API หรือ execute business process ให้เอง
+โหมด 3D รักษาลำดับ X/Y และ branching จากผังต้นแบบ มีรายละเอียด Step, Schema/CRUD, จำนวน Step ที่สำรวจ, ย้อนขั้นก่อนหน้าและเริ่มใหม่ได้ แต่เป็น viewer สำหรับทำความเข้าใจ ไม่ใช่ editor หรือ workflow runtime
+
+Workflow ใช้ collection และ field ID เดียวกับ model จึง rename ได้โดย reference ไม่หลุด, autosave และ sync ด้วย `rev` ชุดเดียวกัน ไม่ต้องตั้งค่าเพิ่มนอกจากเปิด project เดิม ข้อจำกัดคือแอปไม่เรียก API หรือ execute business process ให้เอง
 
 ## รูปแบบที่ส่งออกได้
 
@@ -253,13 +267,15 @@ flowchart LR
 | Workflow model, lint และ export | `app/workflow.ts` |
 | Workflow visual editor | `app/workflow-editor.tsx` |
 | Workflow auto-layout (ELK) | `app/workflow-layout.ts` |
+| Workflow 3D viewer และ animation | `app/workflow-3d/viewer.tsx` |
+| Workflow 3D navigation และ layout mapping | `app/workflow-3d/world.ts` |
 | project store, revision และ snapshot | `app/store.ts` |
 | Workflow REST CRUD | `app/api/projects/[name]/workflows/route.ts` |
 | MCP tools | `app/mcp/server.ts` |
 | MCP HTTP transport | `app/mcp/route.ts` |
 | Wiki viewer | `app/wiki/[project]/` |
 
-เทคโนโลยีหลัก: Next.js 16, React 19, TypeScript strict, React Flow, ELK, Tailwind CSS 4, Zod 4 และ MCP SDK 1.30+
+เทคโนโลยีหลัก: Next.js 16, React 19, TypeScript strict, React Flow, ELK, Babylon.js, glTF, Tailwind CSS 4, Zod 4 และ MCP SDK 1.30+
 
 ## ข้อจำกัดและความปลอดภัย
 
@@ -271,3 +287,5 @@ flowchart LR
 ## License
 
 [MIT](LICENSE) © 2026 jaturapornchai
+
+ตัวละคร `RobotExpressive` ในโหมด Workflow 3D ใช้สัญญาอนุญาต CC0 ดูรายละเอียดและแหล่งที่มาได้ที่ [`public/3d/office/LICENSES.md`](public/3d/office/LICENSES.md)
