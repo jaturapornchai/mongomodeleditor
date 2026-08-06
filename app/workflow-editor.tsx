@@ -825,6 +825,26 @@ export default function WorkflowEditor({
     }
   };
 
+  const open3d = () => {
+    if (!current) return;
+    const query = new URLSearchParams({ project, workflow: current.id });
+    if (selectedStep) query.set("step", selectedStep);
+    const target = new URL(`/workflow-3d?${query}`, window.location.origin).toString();
+    const preview = window.open("about:blank", "_blank");
+    if (!preview) {
+      setMessage("เบราว์เซอร์บล็อกหน้าต่างใหม่ — อนุญาต pop-up แล้วลองอีกครั้ง");
+      return;
+    }
+    preview.opener = null;
+    preview.document.title = "กำลังเปิด Workflow 3D";
+    preview.document.body.textContent = "กำลังบันทึกและเปิด Workflow 3D…";
+    preview.document.body.style.cssText = "margin:0;display:grid;place-items:center;height:100vh;background:#020617;color:#67e8f9;font:14px system-ui";
+    void flush().then((saved) => {
+      if (saved) preview.location.replace(target);
+      else preview.close();
+    });
+  };
+
   const selectedStepData = nodes.find((node) => node.id === selectedStep)?.data;
   const selectedEdgeData = edges.find((edge) => edge.id === selectedEdge);
   const uniqueWorkflowName = (base: string) => {
@@ -857,6 +877,7 @@ export default function WorkflowEditor({
           <button className="mm-btn" title="จัดเรียงขั้นตอนอัตโนมัติ ไม่ให้ทับกัน" disabled={!current || arranging || nodes.length === 0} onClick={() => void autoLayout()}>{arranging ? "◌ กำลังจัด..." : "▦ จัดผัง"}</button>
           <button className={`mm-btn ${issues.length ? "border-amber-500/30 text-amber-300" : "text-emerald-400"}`} disabled={!current} onClick={() => { setSelectedStep(null); setSelectedEdge(null); setShowOverview(true); }}>🩺 {issues.length ? `${issues.length} จุด` : "ผ่าน"}</button>
           <button className="mm-btn" disabled={!current} onClick={() => void fitView({ padding: 0.18, duration: 250 })}>⛶ พอดี</button>
+          <button className="mm-btn border-cyan-400/30 bg-cyan-400/10 text-cyan-200" title="เปิดโหมดเดินสำรวจ Workflow ในแท็บใหม่" disabled={!current || nodes.length === 0} onClick={open3d}>🎮 เดิน 3D</button>
           <button
             className="mm-btn mm-btn-primary"
             disabled={!current}
